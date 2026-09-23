@@ -1,0 +1,307 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../../../domain/models/chat/chat_message.dart';
+import '../../../domain/models/chat/connection_status.dart';
+import '../view_models/chat_view_model.dart';
+import '../view_models/connection_view_model.dart';
+
+/// 首页（View 层）：连接区 + 消息区 + 输入区。
+///
+/// 只负责展示与交互，逻辑全部委托给 [ConnectionViewModel] 与 [ChatViewModel]。
+class ChatScreen extends StatefulWidget {
+  const ChatScreen({super.key});
+
+  @override
+  State<ChatScreen> createState() => _ChatScreenState();
+}
+
+class _ChatScreenState extends State<ChatScreen> {
+  final TextEditingController _messageController = TextEditingController();
+  final TextEditingController _ipController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    // 首帧后再初始化，避免在 build 过程中触发 notifyListeners。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<ConnectionViewModel>().initialize();
+    });
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _ipController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final connection = context.watch<ConnectionViewModel>();
+    final chat = context.watch<ChatViewModel>();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Mova'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: Center(
+              child: Text(
+                connection.localInfo?.name ?? '获取中…',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          _buildConnectionPanel(connection),
+          const Divider(height: 1),
+          Expanded(child: _buildMessageList(chat)),
+          _buildInputBar(connection),
+        ],
+      ),
+    );
+  }
+
+  // ---------- 连接区 ----------
+
+  Widget _buildConnectionPanel(ConnectionViewModel vm) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _StatusChip(status: vm.status, remoteName: vm.remoteName),
+              const Spacer(),
+              if (vm.isConnected)
+                TextButton.icon(
+                  onPressed: vm.disconnect,
+                  icon: const Icon(Icons.link_off, size: 18),
+                  label: const Text('断开'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '本机地址：${vm.localInfo?.endpoint ?? '获取中…'}（把这个地址告诉对方即可手动连接）',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          if (vm.peers.isEmpty)
+            const Text('正在搜索局域网内的设备…', style: TextStyle(fontSize: 13))
+          else
+            Wrap(
+              spacing: 8,
+              children: [
+                for (final peer in vm.peers)
+                  ActionChip(
+                    avatar: const Icon(Icons.computer, size: 18),
+                    label: Text('${peer.name} (${peer.ip})'),
+                    onPressed: () => vm.connectToPeer(peer),
+                  ),
+              ],
+            ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _ipController,
+                  decoration: const InputDecoration(
+                    hintText: '手动连接：输入 IP 或 IP:端口',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                  onSubmitted: (_) => _connectManual(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _connectManual,
+                child: const Text('连接'),
+              ),
+            ],
+          ),
+          if (vm.errorMessage != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                vm.errorMessage!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ---------- 消息区 ----------
+
+  Widget _buildMessageList(ChatViewModel vm) {
+    if (vm.messages.isEmpty) {
+      return const Center(
+        child: Text('还没有消息 —— 先连接一台设备，然后发送一条试试'),
+      );
+    }
+
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.all(12),
+      itemCount: vm.messages.length,
+      itemBuilder: (context, index) => _MessageBubble(message: vm.messages[index]),
+    );
+  }
+
+  // ---------- 输入区 ----------
+
+  Widget _buildInputBar(ConnectionViewModel connection) {
+    return Padding(
+      padding: const EdgeInsets.all(8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _messageController,
+              decoration: const InputDecoration(
+                hintText: '输入消息…',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _send(),
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton.filled(
+            onPressed: connection.isConnected ? _send : null,
+            icon: const Icon(Icons.send),
+            tooltip: '发送',
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------- 交互 ----------
+
+  Future<void> _send() async {
+    final text = _messageController.text;
+    if (text.trim().isEmpty) return;
+
+    _messageController.clear();
+    await context.read<ChatViewModel>().send(text);
+    _scrollToBottom();
+  }
+
+  void _connectManual() {
+    final input = _ipController.text.trim();
+    if (input.isEmpty) return;
+
+    final parts = input.split(':');
+    if (parts.length == 2) {
+      final port = int.tryParse(parts[1]);
+      context.read<ConnectionViewModel>().connect(
+            parts[0],
+            port: port,
+          );
+    } else {
+      context.read<ConnectionViewModel>().connect(input);
+    }
+  }
+
+  void _scrollToBottom() {
+    if (!_scrollController.hasClients) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+}
+
+/// 连接状态标签。
+class _StatusChip extends StatelessWidget {
+  const _StatusChip({required this.status, required this.remoteName});
+
+  final ConnectionStatus status;
+  final String? remoteName;
+
+  @override
+  Widget build(BuildContext context) {
+    final (text, color) = switch (status) {
+      ConnectionStatus.connected => (
+          '已连接${remoteName != null ? '：$remoteName' : ''}',
+          Colors.green,
+        ),
+      ConnectionStatus.connecting => ('连接中…', Colors.orange),
+      ConnectionStatus.disconnected => ('未连接', Colors.grey),
+    };
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.circle, size: 8, color: color),
+          const SizedBox(width: 6),
+          Text(text, style: TextStyle(color: color, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+}
+
+/// 单条消息气泡。
+class _MessageBubble extends StatelessWidget {
+  const _MessageBubble({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isSelf = message.isSelf;
+
+    return Align(
+      alignment: isSelf ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        constraints: const BoxConstraints(maxWidth: 420),
+        decoration: BoxDecoration(
+          color: isSelf
+              ? theme.colorScheme.primaryContainer
+              : theme.colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          crossAxisAlignment:
+              isSelf ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          children: [
+            Text(
+              isSelf ? '我' : message.sender,
+              style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 2),
+            Text(message.text),
+          ],
+        ),
+      ),
+    );
+  }
+}

@@ -1,0 +1,136 @@
+# 用 GitHub Actions 在云端构建 Windows / macOS 桌面包。
+#
+# 触发方式（二选一）：
+#   1) 推送 tag：git tag v1.0.0 && git push origin v1.0.0   -> 构建并自动发布 Release
+#   2) 手动：GitHub 仓库页 -> Actions -> Build Desktop -> Run workflow -> 只上传产物
+#
+# 产物在 Actions 运行页底部的 Artifacts 区域下载。
+
+name: Build Desktop
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------- Windows ----------------
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 自动定位 Flutter 工程目录：仓库根就是工程，或工程在子目录都能用。
+      - name: 定位 Flutter 工程目录
+        id: locate
+        shell: bash
+        run: |
+          if [ -f "pubspec.yaml" ]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          else
+            found=$(find . -maxdepth 4 -name pubspec.yaml -not -path "*/build/*" | head -n 1)
+            echo "dir=$(dirname "$found")" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          channel: stable
+          cache: true
+
+      - name: 拉取依赖
+        run: flutter pub get
+        working-directory: ${{ steps.locate.outputs.dir }}
+
+      # --no-fatal-infos：info 级 lint 不阻断构建（项目目前有若干风格提示）。
+      - name: 静态分析
+        run: flutter analyze --no-fatal-infos
+        working-directory: ${{ steps.locate.outputs.dir }}
+
+      - name: 构建 Windows 发布版
+        run: flutter build windows --release
+        working-directory: ${{ steps.locate.outputs.dir }}
+
+      # exe 依赖同目录的 dll 与 data 资源，必须整包压缩，不能只发 exe。
+      - name: 打包为 zip
+        env:
+          PROJECT_DIR: ${{ steps.locate.outputs.dir }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:PROJECT_DIR/dist" | Out-Null
+          Compress-Archive -Path "$env:PROJECT_DIR/build/windows/x64/runner/Release/*" `
+            -DestinationPath "$env:PROJECT_DIR/dist/mova-windows-x64.zip"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: mova-windows-x64
+          path: ${{ steps.locate.outputs.dir }}/dist/mova-windows-x64.zip
+
+      - name: 发布到 GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.locate.outputs.dir }}/dist/mova-windows-x64.zip
+
+  # ---------------- macOS ----------------
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 定位 Flutter 工程目录
+        id: locate
+        run: |
+          if [ -f "pubspec.yaml" ]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          else
+            found=$(find . -maxdepth 4 -name pubspec.yaml -not -path "*/build/*" | head -n 1)
+            echo "dir=$(dirname "$found")" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          channel: stable
+          cache: true
+
+      - name: 拉取依赖
+        run: flutter pub get
+        working-directory: ${{ steps.locate.outputs.dir }}
+
+      - name: 构建 macOS 发布版
+        run: flutter build macos --release
+        working-directory: ${{ steps.locate.outputs.dir }}
+
+      # --keepParent 保证解压后是完整的 mova.app（而不是散落的文件）。
+      - name: 打包为 zip
+        env:
+          PROJECT_DIR: ${{ steps.locate.outputs.dir }}
+        run: |
+          mkdir -p "$PROJECT_DIR/dist"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$PROJECT_DIR/build/macos/Build/Products/Release/mova.app" \
+            "$PROJECT_DIR/dist/mova-macos.zip"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: mova-macos
+          path: ${{ steps.locate.outputs.dir }}/dist/mova-macos.zip
+
+      - name: 发布到 GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.locate.outputs.dir }}/dist/mova-macos.zip
