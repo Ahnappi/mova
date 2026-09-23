@@ -116,6 +116,23 @@ class ConnectionViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 重新搜索局域网设备（清空当前列表后重新广播/监听一轮）。
+  Future<void> restartDiscovery() async {
+    final info = _localInfo;
+    if (info == null) return;
+
+    _peers = const [];
+    notifyListeners();
+
+    await _discoveryRepository.stop();
+    final result = await _discoveryRepository.start(info);
+    if (result is Error<void>) {
+      _errorMessage = result.error.toString();
+      _log.warning('重新搜索失败：${result.error}');
+    }
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     _statusSub?.cancel();

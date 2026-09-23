@@ -72,6 +72,7 @@ class TransferRepositoryLocal implements TransferRepository {
         totalBytes: file.size,
         direction: TransferDirection.sending,
         status: TransferStatus.waiting,
+        createdAt: DateTime.now(),
         localPath: file.path,
       );
       _queue.add(_QueuedSend(id: id, file: file));
@@ -237,6 +238,7 @@ class TransferRepositoryLocal implements TransferRepository {
           totalBytes: event.size,
           direction: TransferDirection.receiving,
           status: TransferStatus.waiting,
+          createdAt: DateTime.now(),
         );
         _emit(force: true);
       case AcceptReceived():

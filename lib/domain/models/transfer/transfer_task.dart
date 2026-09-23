@@ -27,17 +27,18 @@ enum TransferStatus {
 /// 收发两端共用同一个模型：发送端与接收端各自维护自己的任务对象，
 /// 因此**两边都能看到自己的进度条**。
 class TransferTask {
-  const TransferTask({
+  TransferTask({
     required this.id,
     required this.fileName,
     required this.totalBytes,
     required this.direction,
     required this.status,
+    DateTime? createdAt,
     this.transferredBytes = 0,
     this.localPath,
     this.error,
     this.speedBytesPerSecond = 0,
-  });
+  }) : createdAt = createdAt ?? DateTime(1970);
 
   /// 传输 id（发起方分配，随机生成以避免双方撞号）。
   final int id;
@@ -58,6 +59,9 @@ class TransferTask {
 
   /// 瞬时速度（字节/秒），用于界面展示。
   final int speedBytesPerSecond;
+
+  /// 任务创建时间（用于在聊天流里按时间归并展示）。
+  final DateTime createdAt;
 
   /// 进度 0.0 ~ 1.0；未知大小时为 0。
   double get progress =>

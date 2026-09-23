@@ -8,6 +8,7 @@ import 'config/dependencies.dart';
 import 'data/services/storage/log_service.dart';
 import 'data/services/storage/storage_service.dart';
 import 'ui/chat/widgets/chat_screen.dart';
+import 'ui/theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -72,10 +73,7 @@ class MainApp extends StatelessWidget {
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
         title: 'Mova',
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
-          useMaterial3: true,
-        ),
+        theme: buildAppTheme(),
         home: const ChatScreen(),
       ),
     );

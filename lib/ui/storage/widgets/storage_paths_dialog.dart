@@ -2,16 +2,33 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../../../../data/repositories/storage/storage_repository.dart';
-import '../../../../domain/models/storage/storage_entry.dart';
-import '../../../../utils/format.dart';
+import '../../../data/repositories/storage/storage_repository.dart';
+import '../../../domain/models/storage/storage_entry.dart';
+import '../../theme/app_motion_widgets.dart';
+import '../../theme/app_theme.dart';
+import '../../../utils/format.dart';
 import '../view_models/storage_view_model.dart';
 
-/// 打开「数据存放位置」弹窗。
+/// 打开「数据存放位置」弹窗（缩放 0.96→1 进场 / 反向出场）。
 Future<void> showStoragePathsDialog(BuildContext context) {
-  return showDialog<void>(
+  return showGeneralDialog(
     context: context,
-    builder: (_) => const StoragePathsDialog(),
+    transitionDuration: AppMotion.dialogIn,
+    transitionBuilder: (context, animation, secondaryAnimation, child) {
+      final curved = CurvedAnimation(
+        parent: animation,
+        curve: AppMotion.curve,
+        reverseCurve: AppMotion.curve,
+      );
+      return FadeTransition(
+        opacity: curved,
+        child: ScaleTransition(
+          scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
+          child: child,
+        ),
+      );
+    },
+    pageBuilder: (_, _, _) => const StoragePathsDialog(),
   );
 }
 
@@ -26,6 +43,7 @@ class StoragePathsDialog extends StatefulWidget {
 
 class _StoragePathsDialogState extends State<StoragePathsDialog> {
   late final StorageViewModel _viewModel;
+  StorageEntry? _pendingDelete;
 
   @override
   void initState() {
@@ -47,115 +65,173 @@ class _StoragePathsDialogState extends State<StoragePathsDialog> {
       animation: _viewModel,
       builder: (context, _) {
         final vm = _viewModel;
-        final total = vm.entries.fold<int>(0, (sum, e) => sum + e.sizeBytes);
+        final receivedEntry = _findReceivedEntry(vm);
 
-        return AlertDialog(
-          title: const Text('数据存放位置'),
-          content: SizedBox(
-            width: 620,
-            height: 440,
+        return Dialog(
+          backgroundColor: AppColors.background,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760, maxHeight: 620),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Row(
-                  children: [
-                    Text(
-                      '共 ${vm.entries.length} 处 · 合计 ${formatBytes(total)}',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    if (vm.isMeasuring) ...[
-                      const SizedBox(width: 8),
-                      const SizedBox(
-                        width: 12,
-                        height: 12,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                // 头部：标题 + 刷新圆钮。
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 22, 16, 12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '数据存放位置',
+                              style: TextStyle(
+                                fontSize: 19,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            SizedBox(height: 6),
+                            _TotalSubtitle(),
+                          ],
+                        ),
                       ),
-                      const SizedBox(width: 6),
-                      Text(
-                        '统计中…',
-                        style: Theme.of(context).textTheme.bodySmall,
+                      PressableScale(
+                        onTap: vm.isLoading ? null : vm.load,
+                        child: Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: AppColors.surfaceMuted,
+                            shape: BoxShape.circle,
+                          ),
+                          child: vm.isMeasuring
+                              ? const Padding(
+                                  padding: EdgeInsets.all(10),
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2),
+                                )
+                              : const Icon(Icons.refresh_rounded, size: 18),
+                        ),
                       ),
                     ],
-                    const Spacer(),
-                    IconButton(
-                      tooltip: '刷新',
-                      iconSize: 18,
-                      onPressed: vm.isLoading ? null : vm.load,
-                      icon: const Icon(Icons.refresh),
-                    ),
-                  ],
+                  ),
                 ),
                 if (vm.errorMessage != null)
                   Padding(
-                    padding: const EdgeInsets.only(top: 6),
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
                     child: Text(
                       vm.errorMessage!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                        fontSize: 12,
-                      ),
+                      style: const TextStyle(
+                          color: AppColors.danger, fontSize: 12),
                     ),
                   ),
-                const SizedBox(height: 8),
+                const Divider(height: 1),
+                // 条目列表：行式布局，分隔线隔开。
                 Expanded(
                   child: vm.entries.isEmpty
-                      ? const Center(child: Text('正在读取…'))
-                      : ListView.separated(
+                      ? const Center(
+                          child: Text(
+                            '正在读取…',
+                            style: TextStyle(color: AppColors.textSecondary),
+                          ),
+                        )
+                      : ListView.builder(
+                          shrinkWrap: true,
                           itemCount: vm.entries.length,
-                          separatorBuilder: (context, index) =>
-                              const SizedBox(height: 8),
-                          itemBuilder: (context, index) => _EntryCard(
-                            entry: vm.entries[index],
-                            onCopy: () => _copy(vm.entries[index].path),
-                            onReveal: () => vm.reveal(vm.entries[index]),
-                            onDelete: () => _confirmDelete(vm, vm.entries[index]),
+                          itemBuilder: (context, index) {
+                            final entry = vm.entries[index];
+                            return Column(
+                              children: [
+                                _EntryRow(
+                                  entry: entry,
+                                  onCopy: () => _copy(entry.path),
+                                  onReveal: () => vm.reveal(entry),
+                                  onDelete: entry.canDelete
+                                      ? () => setState(
+                                          () => _pendingDelete = entry)
+                                      : null,
+                                ),
+                                if (_pendingDelete == entry)
+                                  _ConfirmDeleteBand(
+                                    onCancel: () =>
+                                        setState(() => _pendingDelete = null),
+                                    onDelete: () async {
+                                      setState(() => _pendingDelete = null);
+                                      await vm.delete(entry);
+                                      if (!mounted) return;
+                                      _showMessage('已清理「${entry.title}」');
+                                    },
+                                  ),
+                                const Divider(height: 1),
+                              ],
+                            );
+                          },
+                        ),
+                ),
+                // 底部：打开接收文件夹 + 完成。
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 12, 24, 18),
+                  child: Row(
+                    children: [
+                      if (receivedEntry != null)
+                        PressableScale(
+                          onTap: () => vm.reveal(receivedEntry),
+                          child: const Text(
+                            '在访达中打开接收文件夹',
+                            style: TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
+                      const Spacer(),
+                      PressableScale(
+                        onTap: () => Navigator.of(context).pop(),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 28, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary,
+                            borderRadius:
+                                BorderRadius.circular(AppDimens.radiusPill),
+                          ),
+                          child: const Text(
+                            '完成',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('关闭'),
-            ),
-          ],
         );
       },
     );
+  }
+
+  StorageEntry? _findReceivedEntry(StorageViewModel vm) {
+    for (final entry in vm.entries) {
+      if (entry.kind == StorageEntryKind.receivedFiles) return entry;
+    }
+    return null;
   }
 
   Future<void> _copy(String path) async {
     await Clipboard.setData(ClipboardData(text: path));
     if (!mounted) return;
     _showMessage('已复制路径');
-  }
-
-  Future<void> _confirmDelete(StorageViewModel vm, StorageEntry entry) async {
-    final confirmed = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Text('确认清理「${entry.title}」？'),
-            content: Text('${entry.path}\n\n${entry.deleteNote}'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('清理'),
-              ),
-            ],
-          ),
-        ) ??
-        false;
-
-    if (!confirmed) return;
-    await vm.delete(entry);
-    if (!mounted) return;
-    _showMessage('已清理「${entry.title}」');
   }
 
   void _showMessage(String text) {
@@ -167,9 +243,27 @@ class _StoragePathsDialogState extends State<StoragePathsDialog> {
   }
 }
 
-/// 单个存储位置卡片。
-class _EntryCard extends StatelessWidget {
-  const _EntryCard({
+/// 「共 N 处 · 占用 X」副标题（读取 vm 后渲染）。
+class _TotalSubtitle extends StatelessWidget {
+  const _TotalSubtitle();
+
+  @override
+  Widget build(BuildContext context) {
+    final vm = context.read<StorageViewModel>();
+    // 通过 AnimatedBuilder 的外部 builder 已经监听 vm；这里直接读快照。
+    final entries = vm.entries;
+    final total = entries.fold<int>(0, (sum, e) => sum + e.sizeBytes);
+
+    return Text(
+      entries.isEmpty ? '正在统计占用…' : '共 ${entries.length} 处 · 占用 ${formatBytes(total)}',
+      style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+    );
+  }
+}
+
+/// 单个存储位置行（设计稿 03：图标方块 + 标题/描述/路径 + 尺寸 + 操作图标）。
+class _EntryRow extends StatelessWidget {
+  const _EntryRow({
     required this.entry,
     required this.onCopy,
     required this.onReveal,
@@ -179,126 +273,190 @@ class _EntryCard extends StatelessWidget {
   final StorageEntry entry;
   final VoidCallback onCopy;
   final VoidCallback onReveal;
-  final VoidCallback onDelete;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.4)),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(_iconFor(entry.kind), size: 18),
-              const SizedBox(width: 8),
-              Text(entry.title, style: theme.textTheme.titleSmall),
-              const SizedBox(width: 8),
-              _DeletableChip(canDelete: entry.canDelete, entry: entry),
-              const Spacer(),
-              Text(formatBytes(entry.sizeBytes), style: theme.textTheme.bodySmall),
-            ],
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: AppColors.surfaceMuted,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(_iconFor(entry.kind),
+                size: 20, color: AppColors.textPrimary),
           ),
-          const SizedBox(height: 4),
-          Text(entry.description, style: theme.textTheme.bodySmall),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              Expanded(
-                child: SelectableText(
-                  entry.path,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontFamily: 'Courier',
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.title,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  entry.description,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
                     fontSize: 12,
                   ),
                 ),
-              ),
-              SizedBox(
-                width: 28,
-                height: 28,
-                child: IconButton(
-                  padding: EdgeInsets.zero,
-                  iconSize: 16,
-                  tooltip: '复制路径',
-                  onPressed: onCopy,
-                  icon: const Icon(Icons.copy),
-                ),
-              ),
-              SizedBox(
-                width: 28,
-                height: 28,
-                child: IconButton(
-                  padding: EdgeInsets.zero,
-                  iconSize: 16,
-                  tooltip: '在文件管理器中显示',
-                  onPressed: onReveal,
-                  icon: const Icon(Icons.folder_open),
-                ),
-              ),
-              if (entry.canDelete)
-                SizedBox(
-                  width: 28,
-                  height: 28,
-                  child: IconButton(
-                    padding: EdgeInsets.zero,
-                    iconSize: 16,
-                    tooltip: '清理',
-                    onPressed: onDelete,
-                    icon: Icon(
-                      Icons.delete_outline,
-                      color: theme.colorScheme.error,
-                    ),
+                const SizedBox(height: 3),
+                Text(
+                  entry.path,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
                   ),
                 ),
-            ],
+              ],
+            ),
           ),
+          const SizedBox(width: 12),
+          SizedBox(
+            width: 72,
+            child: Text(
+              formatBytes(entry.sizeBytes),
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          _RoundIconAction(
+            tooltip: '在文件管理器中显示',
+            icon: Icons.visibility_outlined,
+            onPressed: onReveal,
+          ),
+          _RoundIconAction(
+            tooltip: '复制路径',
+            icon: Icons.copy_rounded,
+            onPressed: onCopy,
+          ),
+          if (entry.canDelete)
+            _RoundIconAction(
+              tooltip: '清理',
+              icon: Icons.delete_outline_rounded,
+              color: entry.isDisposable ? AppColors.danger : null,
+              onPressed: onDelete!,
+            ),
         ],
       ),
     );
   }
 
   IconData _iconFor(StorageEntryKind kind) => switch (kind) {
-        StorageEntryKind.appData => Icons.inventory_2_outlined,
-        StorageEntryKind.settings => Icons.settings_outlined,
+        StorageEntryKind.appData => Icons.storage_rounded,
+        StorageEntryKind.settings => Icons.tune_rounded,
         StorageEntryKind.logs => Icons.article_outlined,
-        StorageEntryKind.temp => Icons.cleaning_services_outlined,
-        StorageEntryKind.receivedFiles => Icons.download_done_outlined,
+        StorageEntryKind.temp => Icons.folder_outlined,
+        StorageEntryKind.receivedFiles => Icons.folder_outlined,
       };
 }
 
-/// 「可安全删除 / 请勿删除」标记。
-class _DeletableChip extends StatelessWidget {
-  const _DeletableChip({required this.canDelete, required this.entry});
+/// 行内删除确认条（设计稿：灰底 + 取消 / 红色删除）。
+class _ConfirmDeleteBand extends StatelessWidget {
+  const _ConfirmDeleteBand({required this.onCancel, required this.onDelete});
 
-  final bool canDelete;
-  final StorageEntry entry;
+  final VoidCallback onCancel;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final color = entry.isDisposable
-        ? Colors.green
-        : (canDelete ? Colors.orange : theme.colorScheme.outline);
-
-    final text = entry.isDisposable
-        ? '可安全删除'
-        : (canDelete ? '可删除（会重置偏好）' : '请勿删除');
-
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(10),
+      color: AppColors.surfaceMuted,
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+      child: Row(
+        children: [
+          const Expanded(
+            child: Text(
+              '删除后不可恢复，确定继续？',
+              style: TextStyle(fontSize: 13),
+            ),
+          ),
+          PressableScale(
+            onTap: onCancel,
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+              decoration: BoxDecoration(
+                border: Border.all(color: AppColors.border),
+                borderRadius: BorderRadius.circular(AppDimens.radiusPill),
+                color: AppColors.background,
+              ),
+              child: const Text(
+                '取消',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          PressableScale(
+            onTap: onDelete,
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.danger,
+                borderRadius: BorderRadius.circular(AppDimens.radiusPill),
+              ),
+              child: const Text(
+                '删除',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
-      child: Text(
-        text,
-        style: TextStyle(color: color, fontSize: 11),
+    );
+  }
+}
+
+/// 圆形小操作按钮。
+class _RoundIconAction extends StatelessWidget {
+  const _RoundIconAction({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+    this.color,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback onPressed;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: PressableScale(
+        onTap: onPressed,
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Icon(icon, size: 17, color: color ?? AppColors.textSecondary),
+        ),
       ),
     );
   }
