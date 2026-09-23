@@ -1,4 +1,4 @@
-/// 应用级常量（端口、超时等）。
+/// 应用级常量（端口、超时、传输参数等）。
 ///
 /// 集中放置，便于后续调整为可配置项。
 class AppConfig {
@@ -18,4 +18,30 @@ class AppConfig {
 
   /// 主动连接超时时间。
   static const Duration connectTimeout = Duration(seconds: 5);
+
+  // ---------- 文件传输 ----------
+
+  /// 单个数据块大小（1 MiB）。
+  ///
+  /// 采用「分块流式」读写，无论多大的文件都不会被整体读进内存，
+  /// 因此 10GB 级文件与 10MB 文件的内存占用是一样的。
+  static const int fileChunkSize = 1024 * 1024;
+
+  /// 发送端未确认积压上限（8 MiB）。
+  ///
+  /// 达到上限就等待 socket 把积压数据真正写出去（flush）再继续读盘，
+  /// 避免发送快于网络时把内存撑爆——这是能稳定传大文件的关键。
+  static const int maxInFlightBytes = 8 * 1024 * 1024;
+
+  /// 允许传输的文件扩展名（v1 仅办公文档）。
+  static const List<String> allowedFileExtensions = [
+    'pdf',
+    'doc',
+    'docx',
+    'xls',
+    'xlsx',
+  ];
+
+  /// 进度刷新间隔：高频分块时按此节流，避免每块都触发整页重建。
+  static const Duration progressThrottle = Duration(milliseconds: 100);
 }

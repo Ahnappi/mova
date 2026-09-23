@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../../domain/models/chat/chat_message.dart';
 import '../../../domain/models/chat/connection_status.dart';
+import '../../transfer/widgets/transfer_panel.dart';
 import '../view_models/chat_view_model.dart';
 import '../view_models/connection_view_model.dart';
 
@@ -63,6 +65,14 @@ class _ChatScreenState extends State<ChatScreen> {
         children: [
           _buildConnectionPanel(connection),
           const Divider(height: 1),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 220),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              child: const TransferPanel(),
+            ),
+          ),
+          const Divider(height: 1),
           Expanded(child: _buildMessageList(chat)),
           _buildInputBar(connection),
         ],
@@ -91,10 +101,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
           const SizedBox(height: 8),
-          Text(
-            '本机地址：${vm.localInfo?.endpoint ?? '获取中…'}（把这个地址告诉对方即可手动连接）',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
+          _buildLocalAddressRow(vm),
           const SizedBox(height: 8),
           if (vm.peers.isEmpty)
             const Text('正在搜索局域网内的设备…', style: TextStyle(fontSize: 13))
@@ -142,6 +149,63 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
     );
+  }
+
+  /// 本机地址行：点击文字或按钮即复制，方便发给对方手动连接。
+  Widget _buildLocalAddressRow(ConnectionViewModel vm) {
+    final endpoint = vm.localInfo?.endpoint;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: endpoint == null ? null : () => _copyToClipboard(endpoint, '本机地址'),
+          child: Text(
+            '本机地址：${endpoint ?? '获取中…'}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+        SizedBox(
+          width: 28,
+          height: 28,
+          child: IconButton(
+            padding: EdgeInsets.zero,
+            iconSize: 16,
+            tooltip: '复制本机地址（IP:端口）',
+            onPressed:
+                endpoint == null ? null : () => _copyToClipboard(endpoint, '本机地址'),
+            icon: const Icon(Icons.copy),
+          ),
+        ),
+        SizedBox(
+          width: 28,
+          height: 28,
+          child: IconButton(
+            padding: EdgeInsets.zero,
+            iconSize: 16,
+            tooltip: '仅复制 IP',
+            onPressed: vm.localInfo == null
+                ? null
+                : () => _copyToClipboard(vm.localInfo!.ip, 'IP'),
+            icon: const Icon(Icons.copy_all),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _copyToClipboard(String text, String label) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('已复制$label：$text'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
   }
 
   // ---------- 消息区 ----------

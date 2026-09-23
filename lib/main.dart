@@ -17,6 +17,7 @@ class MainApp extends StatelessWidget {
     return MultiProvider(
       providers: providers,
       child: MaterialApp(
+        debugShowCheckedModeBanner: false,
         title: 'Mova',
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),

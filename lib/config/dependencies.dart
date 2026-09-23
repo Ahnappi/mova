@@ -10,10 +10,14 @@ import '../data/repositories/discovery/discovery_repository_local.dart';
 import '../data/services/chat/chat_transport_service.dart';
 import '../data/services/counter/counter_service.dart';
 import '../data/services/discovery/discovery_service.dart';
+import '../data/repositories/transfer/transfer_repository.dart';
+import '../data/repositories/transfer/transfer_repository_local.dart';
 import '../data/services/network/network_info_service.dart';
+import '../data/services/transfer/file_storage_service.dart';
 import '../ui/chat/view_models/chat_view_model.dart';
 import '../ui/chat/view_models/connection_view_model.dart';
 import '../ui/counter/view_models/counter_view_model.dart';
+import '../ui/transfer/view_models/transfer_view_model.dart';
 
 /// 依赖装配（参照 compass_app 的 config/dependencies.dart）。
 ///
@@ -48,6 +52,8 @@ List<SingleChildWidget> get providers {
       },
     ),
 
+    Provider(create: (context) => FileStorageService()),
+
     // Repository 层
     Provider(
       create: (context) =>
@@ -58,6 +64,14 @@ List<SingleChildWidget> get providers {
     ),
     Provider(
       create: (context) => ChatRepositoryLocal(context.read()) as ChatRepository,
+      dispose: (_, repository) {
+        repository.dispose();
+      },
+    ),
+    Provider(
+      create: (context) =>
+          TransferRepositoryLocal(context.read(), context.read())
+              as TransferRepository,
       dispose: (_, repository) {
         repository.dispose();
       },
@@ -73,6 +87,12 @@ List<SingleChildWidget> get providers {
     ),
     ChangeNotifierProvider(
       create: (context) => ChatViewModel(chatRepository: context.read()),
+    ),
+    ChangeNotifierProvider(
+      create: (context) => TransferViewModel(
+        transferRepository: context.read(),
+        fileStorageService: context.read(),
+      ),
     ),
   ];
 }
