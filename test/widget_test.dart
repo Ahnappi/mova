@@ -3,11 +3,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:mova/data/services/storage/log_service.dart';
+import 'package:mova/data/services/storage/storage_service.dart';
 import 'package:mova/main.dart';
 
 void main() {
   testWidgets('app renders home screen', (WidgetTester tester) async {
-    await tester.pumpWidget(const MainApp());
+    final storage = StorageService();
+    await tester.pumpWidget(
+      MainApp(storageService: storage, logService: LogService(storage)),
+    );
     await tester.pump();
 
     expect(find.byType(MaterialApp), findsOneWidget);

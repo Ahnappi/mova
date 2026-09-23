@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:logging/logging.dart';
 
+import '../../../config/app_config.dart';
 import '../../../data/repositories/transfer/transfer_repository.dart';
 import '../../../data/services/transfer/file_storage_service.dart';
 import '../../../domain/models/transfer/picked_file.dart';
@@ -10,7 +11,7 @@ import '../../../domain/models/transfer/transfer_task.dart';
 // 必须显式导入：result.dart 中的 Error 会覆盖 dart:core 的同名类。
 import '../../../utils/result.dart';
 
-/// 文件传输视图模型（ViewModel 层）：选文件、同意/拒绝/取消、进度展示。
+/// 文件传输视图模型（ViewModel 层）：选文件、拖拽发送、保存位置、同意/拒绝/取消。
 class TransferViewModel extends ChangeNotifier {
   TransferViewModel({
     required TransferRepository transferRepository,
@@ -21,6 +22,7 @@ class TransferViewModel extends ChangeNotifier {
       _tasks = tasks;
       notifyListeners();
     });
+    unawaited(_loadSaveDirectory());
   }
 
   final TransferRepository _transferRepository;
@@ -31,6 +33,12 @@ class TransferViewModel extends ChangeNotifier {
 
   List<TransferTask> _tasks = const [];
   String? _errorMessage;
+
+  /// 接收文件的保存目录（null 表示尚未加载完）。
+  String? _saveDirectory;
+
+  /// 最近一次操作反馈（如「已忽略 2 个不支持的文件」），供界面提示一次。
+  String? _lastMessage;
 
   /// 全部任务（收发混合，按发起/到达顺序）。
   List<TransferTask> get tasks => _tasks;
@@ -50,6 +58,30 @@ class TransferViewModel extends ChangeNotifier {
   /// 最近一次错误。
   String? get errorMessage => _errorMessage;
 
+  /// 接收文件的保存目录。
+  String? get saveDirectory => _saveDirectory;
+
+  /// 最近一次操作反馈；读取后调用 [clearMessage] 避免重复提示。
+  String? get lastMessage => _lastMessage;
+
+  void clearMessage() => _lastMessage = null;
+
+  Future<void> _loadSaveDirectory() async {
+    _saveDirectory = await _fileStorageService.currentSaveDirectory();
+    notifyListeners();
+  }
+
+  /// 让用户选择接收文件的保存目录，并记住它。
+  Future<void> chooseSaveDirectory() async {
+    final directory = await _fileStorageService.pickDirectory(
+      dialogTitle: '选择接收文件的保存位置',
+    );
+    if (directory == null) return; // 用户取消
+    await _fileStorageService.rememberSaveDirectory(directory);
+    _saveDirectory = directory;
+    notifyListeners();
+  }
+
   /// 选择文件并发送（受 AppConfig.allowedFileExtensions 限制）。
   Future<void> pickAndSendFiles() async {
     _errorMessage = null;
@@ -58,7 +90,37 @@ class TransferViewModel extends ChangeNotifier {
     final List<PickedFile> picked = await _fileStorageService.pickFiles();
     if (picked.isEmpty) return;
 
-    final result = await _transferRepository.sendFiles(picked);
+    await _send(picked);
+  }
+
+  /// 发送拖拽进来的文件路径；不支持的类型会被忽略并给出提示。
+  Future<void> sendPaths(List<String> paths) async {
+    _errorMessage = null;
+    notifyListeners();
+
+    final parsed = await _fileStorageService.filesFromPaths(paths);
+    if (parsed.accepted.isEmpty) {
+      _lastMessage = paths.isEmpty
+          ? '没有识别到文件'
+          : '这些文件暂不支持（仅支持 $_allowedText）';
+      notifyListeners();
+      return;
+    }
+
+    await _send(parsed.accepted);
+
+    final ignoredHint = parsed.ignored.isEmpty
+        ? ''
+        : '，已忽略 ${parsed.ignored.length} 个不支持的项';
+    _lastMessage =
+        '已发起 ${parsed.accepted.length} 个文件$ignoredHint';
+    notifyListeners();
+  }
+
+  String get _allowedText => AppConfig.allowedFileExtensions.join(' / ');
+
+  Future<void> _send(List<PickedFile> files) async {
+    final result = await _transferRepository.sendFiles(files);
     if (result is Error<void>) {
       _errorMessage = result.error.toString();
       _log.warning('发起发送失败：${result.error}');
@@ -66,7 +128,7 @@ class TransferViewModel extends ChangeNotifier {
     }
   }
 
-  /// 同意接收；[saveDirectory] 为空时由调用方先选择目录。
+  /// 同意接收；[saveDirectory] 为空时落到当前保存目录。
   Future<void> accept(int fileId, {String? saveDirectory}) async {
     final result = await _transferRepository.accept(
       fileId,
@@ -79,16 +141,18 @@ class TransferViewModel extends ChangeNotifier {
     }
   }
 
-  /// 弹出目录选择后接收。
+  /// 弹出目录选择后接收（会顺带记住该目录）。
   Future<void> acceptWithDirectoryPicker(int fileId) async {
     final directory = await _fileStorageService.pickDirectory();
     if (directory == null) return; // 用户取消选择
+    await _fileStorageService.rememberSaveDirectory(directory);
+    _saveDirectory = directory;
+    notifyListeners();
     await accept(fileId, saveDirectory: directory);
   }
 
-  /// 直接接收到默认目录（下载目录）。
-  Future<void> acceptToDefaultDirectory(int fileId) =>
-      accept(fileId);
+  /// 直接接收到当前保存目录。
+  Future<void> acceptToDefaultDirectory(int fileId) => accept(fileId);
 
   Future<void> reject(int fileId) => _transferRepository.reject(fileId);
 

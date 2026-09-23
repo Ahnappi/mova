@@ -1,10 +1,14 @@
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../../../config/app_config.dart';
 import '../../../domain/models/chat/chat_message.dart';
 import '../../../domain/models/chat/connection_status.dart';
+import '../../storage/widgets/storage_paths_dialog.dart';
 import '../../transfer/widgets/transfer_panel.dart';
+import '../../transfer/view_models/transfer_view_model.dart';
 import '../view_models/chat_view_model.dart';
 import '../view_models/connection_view_model.dart';
 
@@ -22,6 +26,9 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _messageController = TextEditingController();
   final TextEditingController _ipController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+
+  /// 是否有文件正被拖到窗口上方（用于显示拖拽提示层）。
+  bool _dragging = false;
 
   @override
   void initState() {
@@ -50,6 +57,11 @@ class _ChatScreenState extends State<ChatScreen> {
       appBar: AppBar(
         title: const Text('Mova'),
         actions: [
+          IconButton(
+            tooltip: '数据存放位置',
+            icon: const Icon(Icons.storage_rounded),
+            onPressed: () => showStoragePathsDialog(context),
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 16),
             child: Center(
@@ -61,23 +73,77 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          _buildConnectionPanel(connection),
-          const Divider(height: 1),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 220),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-              child: const TransferPanel(),
+      // 整个窗口都是拖放区：把文件拖进来即可发送。
+      body: DropTarget(
+        onDragEntered: (_) => _setDragging(true),
+        onDragExited: (_) => _setDragging(false),
+        onDragDone: (details) => _handleDrop(details.files),
+        child: Stack(
+          children: [
+            Column(
+              children: [
+                _buildConnectionPanel(connection),
+                const Divider(height: 1),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 220),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                    child: const TransferPanel(),
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(child: _buildMessageList(chat)),
+                _buildInputBar(connection),
+              ],
             ),
-          ),
-          const Divider(height: 1),
-          Expanded(child: _buildMessageList(chat)),
-          _buildInputBar(connection),
-        ],
+            if (_dragging) const _DropOverlay(),
+          ],
+        ),
       ),
     );
+  }
+
+  void _setDragging(bool value) {
+    if (_dragging == value) return;
+    setState(() => _dragging = value);
+  }
+
+  Future<void> _handleDrop(List<DropItem> items) async {
+    _setDragging(false);
+
+    // 在 await 之前取好依赖，避免跨异步间隙使用 context。
+    final connection = context.read<ConnectionViewModel>();
+    final transfer = context.read<TransferViewModel>();
+
+    if (!connection.isConnected) {
+      _showMessage('请先连接一台设备，再拖入文件发送');
+      return;
+    }
+
+    // macOS 沙箱下，从 Finder 拖入的文件需要先取得安全作用域访问权，
+    // 否则读取会失败。整个会话保持即可，无需逐个释放。
+    for (final item in items) {
+      final bookmark = item.extraAppleBookmark;
+      if (bookmark == null || bookmark.isEmpty) continue;
+      try {
+        await DesktopDrop.instance
+            .startAccessingSecurityScopedResource(bookmark: bookmark);
+      } catch (_) {
+        // 取不到权限也继续尝试，由后续读取给出错误。
+      }
+    }
+
+    final paths = items.map((item) => item.path).whereType<String>().toList();
+    if (paths.isEmpty) return;
+
+    await transfer.sendPaths(paths);
+    if (!mounted) return;
+
+    final message = transfer.lastMessage;
+    if (message != null) {
+      transfer.clearMessage();
+      _showMessage(message);
+    }
   }
 
   // ---------- 连接区 ----------
@@ -198,13 +264,14 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _copyToClipboard(String text, String label) async {
     await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
+    _showMessage('已复制$label：$text');
+  }
+
+  void _showMessage(String text) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(
-          content: Text('已复制$label：$text'),
-          duration: const Duration(seconds: 2),
-        ),
+        SnackBar(content: Text(text), duration: const Duration(seconds: 2)),
       );
   }
 
@@ -291,6 +358,56 @@ class _ChatScreenState extends State<ChatScreen> {
         curve: Curves.easeOut,
       );
     });
+  }
+}
+
+/// 拖拽悬停时的提示层。
+class _DropOverlay extends StatelessWidget {
+  const _DropOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Container(
+          color: theme.colorScheme.surface.withValues(alpha: 0.75),
+          alignment: Alignment.center,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
+            decoration: BoxDecoration(
+              border: Border.all(
+                color: theme.colorScheme.primary,
+                width: 2,
+                strokeAlign: BorderSide.strokeAlignInside,
+              ),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.download_for_offline_outlined,
+                  size: 32,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '松手即发送给对方',
+                  style: theme.textTheme.titleMedium,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '支持 ${AppConfig.allowedFileExtensions.join(' / ')}',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

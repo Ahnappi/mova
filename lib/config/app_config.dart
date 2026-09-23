@@ -44,4 +44,18 @@ class AppConfig {
 
   /// 进度刷新间隔：高频分块时按此节流，避免每块都触发整页重建。
   static const Duration progressThrottle = Duration(milliseconds: 100);
+
+  // ---------- 本地存储 ----------
+
+  /// 应用配置文件名（位于应用数据目录下）。
+  static const String settingsFileName = 'settings.json';
+
+  /// 日志目录名（位于应用数据目录下）。
+  static const String logsDirectoryName = 'logs';
+
+  /// 日志文件名。
+  static const String logFileName = 'mova.log';
+
+  /// 单个日志文件的大小上限，超过后轮转为 `mova.log.1`，避免日志无限增长。
+  static const int maxLogFileBytes = 2 * 1024 * 1024;
 }

@@ -43,6 +43,8 @@ class TransferPanel extends StatelessWidget {
             ),
           ],
         ),
+        const SizedBox(height: 4),
+        _buildSaveDirectoryRow(context, transfer),
         if (offers.isNotEmpty) ...[
           const SizedBox(height: 8),
           for (final offer in offers) _OfferTile(task: offer),
@@ -51,12 +53,45 @@ class TransferPanel extends StatelessWidget {
         if (tasks.isEmpty)
           Text(
             connection.isConnected
-                ? '还没有文件传输 —— 点右上角「发送文件」，或等对方发给你'
+                ? '还没有文件传输 —— 点「发送文件」选择，或把文件直接拖进窗口'
                 : '连接后即可传输文件',
             style: theme.textTheme.bodySmall,
           )
         else
           for (final task in tasks) _TaskTile(task: task),
+      ],
+    );
+  }
+
+  /// 接收文件的保存位置（可更改，会被记住）。
+  Widget _buildSaveDirectoryRow(BuildContext context, TransferViewModel vm) {
+    final theme = Theme.of(context);
+    final directory = vm.saveDirectory;
+
+    // 注意：这里不能设 mainAxisSize.min —— 那样 Flexible 会拿到 0 宽度，
+    // 路径文字会被压没。占满整行，超长时省略。
+    return Row(
+      children: [
+        const Icon(Icons.folder_outlined, size: 14),
+        const SizedBox(width: 4),
+        Flexible(
+          child: Text(
+            '接收到：${directory ?? '获取中…'}',
+            style: theme.textTheme.bodySmall,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        SizedBox(
+          width: 26,
+          height: 26,
+          child: IconButton(
+            padding: EdgeInsets.zero,
+            iconSize: 15,
+            tooltip: '更改接收文件的保存位置',
+            onPressed: vm.chooseSaveDirectory,
+            icon: const Icon(Icons.edit_outlined),
+          ),
+        ),
       ],
     );
   }

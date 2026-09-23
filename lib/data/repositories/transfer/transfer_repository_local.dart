@@ -154,7 +154,7 @@ class TransferRepositoryLocal implements TransferRepository {
       return Result.error(Exception('该接收请求已失效'));
     }
 
-    final directory = saveDirectory ?? await _storage.defaultSaveDirectory();
+    final directory = saveDirectory ?? await _storage.currentSaveDirectory();
     final target = await _storage.resolveTargetPath(directory, task.fileName);
 
     try {

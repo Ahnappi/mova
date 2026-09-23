@@ -4,7 +4,29 @@
 #   1) 推送 tag：git tag v1.0.0 && git push origin v1.0.0   -> 构建并自动发布 Release
 #   2) 手动：GitHub 仓库页 -> Actions -> Build Desktop -> Run workflow -> 只上传产物
 #
-# 产物在 Actions 运行页底部的 Artifacts 区域下载。
+# ---------------------------------------------------------------------------
+# 产物命名：mova_<平台>_<架构>
+#   Windows : mova_win_x64
+#   macOS   : mova_mac_arm64      （Apple Silicon；Intel Mac 见文末说明）
+#
+# ---------------------------------------------------------------------------
+# 关于「压缩包套压缩包」（重要）
+#
+# upload-artifact@v4 会把上传内容**强制再打一层 zip**，且没有关闭选项。
+# 因此：上传一个 .zip -> 下载得到 zip(zip(...))。要避免嵌套，就必须上传「目录」
+# 或「非压缩包文件」，让 artifact 自己生成的那层 zip 成为唯一的一层。
+#
+#   Windows：直接上传 Release 目录        -> 下载 zip 里就是 mova.exe / dll / data ✅ 单层
+#   macOS  ：**不能直接上传 .app 目录**！
+#            upload-artifact 的 zip 会丢掉文件权限（全部 644，可执行文件失去 +x）
+#            且不保留符号链接（mova.app 内有 12 个），解出来的 app 无法启动。
+#            所以 macOS 必须先 tar（tar 能完整保留权限与符号链接）再上传。
+#
+# 结论：
+#   - Artifacts（Actions 页面下载）：Windows 单层；macOS 是 zip(tar.gz)，
+#     解压后得到 mova_mac_arm64.tar.gz，再解压出 mova.app（这是 GitHub 限制所致）。
+#   - Release 资源（打 tag 才有）：两边都是**干净的单层 zip**，推荐从这里下载。
+# ---------------------------------------------------------------------------
 
 name: Build Desktop
 
@@ -16,6 +38,10 @@ on:
 
 permissions:
   contents: write
+
+env:
+  WIN_ASSET: mova_win_x64
+  MAC_ASSET: mova_mac_arm64
 
 jobs:
   # ---------------- Windows ----------------
@@ -60,26 +86,28 @@ jobs:
         run: flutter build windows --release
         working-directory: ${{ steps.locate.outputs.dir }}
 
+      # 供 Release 使用的单层 zip：zip 根目录下直接是 mova.exe / flutter_windows.dll / data。
       # exe 依赖同目录的 dll 与 data 资源，必须整包压缩，不能只发 exe。
-      - name: 打包为 zip
+      - name: 打包为 zip（Release 用）
         env:
           PROJECT_DIR: ${{ steps.locate.outputs.dir }}
         run: |
           New-Item -ItemType Directory -Force -Path "$env:PROJECT_DIR/dist" | Out-Null
           Compress-Archive -Path "$env:PROJECT_DIR/build/windows/x64/runner/Release/*" `
-            -DestinationPath "$env:PROJECT_DIR/dist/mova-windows-x64.zip"
+            -DestinationPath "$env:PROJECT_DIR/dist/$env:WIN_ASSET.zip" -Force
 
+      # 直接上传目录 -> artifact 的 zip 就是唯一一层，解压即用，不再套娃。
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: mova-windows-x64
-          path: ${{ steps.locate.outputs.dir }}/dist/mova-windows-x64.zip
+          name: ${{ env.WIN_ASSET }}
+          path: ${{ steps.locate.outputs.dir }}/build/windows/x64/runner/Release
 
       - name: 发布到 GitHub Releases
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.locate.outputs.dir }}/dist/mova-windows-x64.zip
+          files: ${{ steps.locate.outputs.dir }}/dist/${{ env.WIN_ASSET }}.zip
 
   # ---------------- macOS ----------------
   build-macos:
@@ -113,24 +141,36 @@ jobs:
         run: flutter build macos --release
         working-directory: ${{ steps.locate.outputs.dir }}
 
-      # --keepParent 保证解压后是完整的 mova.app（而不是散落的文件）。
-      - name: 打包为 zip
+      - name: 打包（tar 供 Artifact，zip 供 Release）
         env:
           PROJECT_DIR: ${{ steps.locate.outputs.dir }}
         run: |
-          mkdir -p "$PROJECT_DIR/dist"
-          ditto -c -k --sequesterRsrc --keepParent \
-            "$PROJECT_DIR/build/macos/Build/Products/Release/mova.app" \
-            "$PROJECT_DIR/dist/mova-macos.zip"
+          cd "$PROJECT_DIR"
+          mkdir -p dist
+          APP="build/macos/Build/Products/Release/mova.app"
+
+          # tar：完整保留符号链接与可执行权限，供 Artifact 上传（见文件头说明）。
+          tar -czf "dist/$MAC_ASSET.tar.gz" -C "build/macos/Build/Products/Release" mova.app
+
+          # zip：Mac 用户双击即可解压出完整的 mova.app，作为 Release 资源。
+          # --keepParent 保证解压后是 mova.app 而不是散落的文件。
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/$MAC_ASSET.zip"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: mova-macos
-          path: ${{ steps.locate.outputs.dir }}/dist/mova-macos.zip
+          name: ${{ env.MAC_ASSET }}
+          path: ${{ steps.locate.outputs.dir }}/dist/${{ env.MAC_ASSET }}.tar.gz
 
       - name: 发布到 GitHub Releases
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.locate.outputs.dir }}/dist/mova-macos.zip
+          files: ${{ steps.locate.outputs.dir }}/dist/${{ env.MAC_ASSET }}.zip
+
+# ---------------------------------------------------------------------------
+# 附：如果要出 Intel Mac 的包
+#   macos-latest 现在是 Apple Silicon，只能构建 arm64。要同时支持 Intel Mac，
+#   把 build-macos 改成 matrix：runs-on: [macos-latest, macos-13]（macos-13 是 Intel），
+#   并把 MAC_ASSET 按 runner 分别设为 mova_mac_arm64 / mova_mac_x64。
+# ---------------------------------------------------------------------------
