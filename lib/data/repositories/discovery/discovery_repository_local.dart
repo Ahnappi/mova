@@ -46,8 +46,21 @@ class DiscoveryRepositoryLocal implements DiscoveryRepository {
     );
   }
 
+  /// 停止发现：关闭 socket、停止清理定时器，并清空已发现的设备。
+  ///
+  /// 由用户手动控制搜索与否，因此停止后不应残留旧设备。
   @override
-  Future<void> stop() => _service.stop();
+  Future<void> stop() async {
+    _pruneTimer?.cancel();
+    _pruneTimer = null;
+    await _service.stop();
+
+    if (_peers.isNotEmpty) {
+      _peers.clear();
+      _lastSeen.clear();
+      _emit();
+    }
+  }
 
   @override
   Future<void> dispose() async {

@@ -26,7 +26,9 @@ class FileStorageService {
     // 只取路径，不把文件内容读进内存（大文件关键）。
     final files = await FilePicker.pickFiles(
       type: FileType.custom,
-      allowedExtensions: AppConfig.allowedFileExtensions,
+      // file_picker 的 allowedExtensions 在某些平台上是大小写敏感的，
+      // 这里把大小写变体都带上（如 .JPG / .MOV），避免选择文件时被过滤掉。
+      allowedExtensions: AppConfig.allowedExtensionsWithCaseVariants,
     );
     if (files.isEmpty) return const <PickedFile>[];
 

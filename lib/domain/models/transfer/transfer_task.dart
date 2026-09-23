@@ -87,6 +87,9 @@ class TransferTask {
       totalBytes: totalBytes,
       direction: direction,
       status: status ?? this.status,
+      // 必须带上：否则每帧进度更新都会把创建时间重置为纪元，
+      // 导致聊天流里的时间线错乱、时间显示为 1970。
+      createdAt: createdAt,
       transferredBytes: transferredBytes ?? this.transferredBytes,
       localPath: localPath ?? this.localPath,
       error: error ?? this.error,

@@ -40,6 +40,9 @@ class ConnectionViewModel extends ChangeNotifier {
   String? _errorMessage;
   bool _initialized = false;
 
+  /// 是否正在搜索局域网设备（由用户在界面上手动开启/关闭）。
+  bool _discovering = false;
+
   /// 本机信息（初始化前为 null）。
   LocalInfo? get localInfo => _localInfo;
 
@@ -55,6 +58,9 @@ class ConnectionViewModel extends ChangeNotifier {
   /// 是否已连接。
   bool get isConnected => _status == ConnectionStatus.connected;
 
+  /// 是否正在搜索局域网设备。
+  bool get isDiscovering => _discovering;
+
   /// 对端名称。
   String? get remoteName => _chatRepository.remoteName;
 
@@ -65,6 +71,10 @@ class ConnectionViewModel extends ChangeNotifier {
 
     _statusSub = _chatRepository.status.listen((status) {
       _status = status;
+      // 连上之后设备搜索就没意义了，自动停下，避免一直在局域网里广播。
+      if (status == ConnectionStatus.connected && _discovering) {
+        unawaited(stopDiscovery());
+      }
       notifyListeners();
     });
 
@@ -77,22 +87,47 @@ class ConnectionViewModel extends ChangeNotifier {
     _chatRepository.localName = _localInfo!.name;
     notifyListeners();
 
-    // 开启监听，让对方可以主动连进来。
+    // 开启监听，让对方可以主动连进来（手动 IP 直连也依赖它）。
     final listenResult = await _chatRepository.startListening(AppConfig.tcpPort);
     if (listenResult is Error<void>) {
       _errorMessage = listenResult.error.toString();
       _log.warning('监听失败：${listenResult.error}');
     }
     notifyListeners();
+  }
 
-    // 开启局域网发现。
-    final discoveryResult = await _discoveryRepository.start(_localInfo!);
-    if (discoveryResult is Error<void>) {
-      _errorMessage = discoveryResult.error.toString();
-      _log.warning('发现失败：${discoveryResult.error}');
+  /// 开启局域网搜索（用户手动触发，默认不搜）。
+  Future<void> startDiscovery() async {
+    final info = _localInfo;
+    if (info == null || _discovering) return;
+
+    _errorMessage = null;
+    _discovering = true;
+    notifyListeners();
+
+    final result = await _discoveryRepository.start(info);
+    if (result is Error<void>) {
+      _discovering = false;
+      _errorMessage = result.error.toString();
+      _log.warning('发现失败：${result.error}');
     }
     notifyListeners();
   }
+
+  /// 停止局域网搜索，并清空已发现的设备。
+  Future<void> stopDiscovery() async {
+    if (!_discovering) return;
+
+    _discovering = false;
+    notifyListeners();
+
+    await _discoveryRepository.stop();
+    notifyListeners();
+  }
+
+  /// 搜索开关。
+  Future<void> toggleDiscovery() =>
+      _discovering ? stopDiscovery() : startDiscovery();
 
   /// 连接到发现的某个设备。
   Future<void> connectToPeer(Peer peer) => connect(peer.ip, port: peer.tcpPort);
@@ -113,23 +148,6 @@ class ConnectionViewModel extends ChangeNotifier {
   /// 断开当前会话（监听仍保留，对方可再次连入）。
   Future<void> disconnect() async {
     await _chatRepository.disconnect();
-    notifyListeners();
-  }
-
-  /// 重新搜索局域网设备（清空当前列表后重新广播/监听一轮）。
-  Future<void> restartDiscovery() async {
-    final info = _localInfo;
-    if (info == null) return;
-
-    _peers = const [];
-    notifyListeners();
-
-    await _discoveryRepository.stop();
-    final result = await _discoveryRepository.start(info);
-    if (result is Error<void>) {
-      _errorMessage = result.error.toString();
-      _log.warning('重新搜索失败：${result.error}');
-    }
     notifyListeners();
   }
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../config/app_config.dart';
 import '../../../domain/models/transfer/transfer_task.dart';
 import '../../theme/app_motion_widgets.dart';
 import '../../theme/app_theme.dart';
@@ -263,7 +264,24 @@ class _OfferCard extends StatelessWidget {
   }
 }
 
-/// 文件类型图标（按扩展名区分），完成后显示对勾。
+/// 文件大类（用于图标与提示）。
+enum TransferFileKind { image, video, document, other }
+
+/// 按扩展名判断文件大类。
+TransferFileKind _kindOf(String extension) {
+  if (AppConfig.imageExtensions.contains(extension)) {
+    return TransferFileKind.image;
+  }
+  if (AppConfig.videoExtensions.contains(extension)) {
+    return TransferFileKind.video;
+  }
+  if (AppConfig.documentExtensions.contains(extension)) {
+    return TransferFileKind.document;
+  }
+  return TransferFileKind.other;
+}
+
+/// 已完成传输的文件类型图标（按扩展名区分），完成后显示对勾。
 class _FileBadge extends StatelessWidget {
   const _FileBadge({required this.fileName, required this.done});
 
@@ -280,7 +298,11 @@ class _FileBadge extends StatelessWidget {
       'pdf' => Icons.picture_as_pdf_outlined,
       'xls' || 'xlsx' => Icons.table_chart_outlined,
       'doc' || 'docx' => Icons.description_outlined,
-      _ => Icons.insert_drive_file_outlined,
+      _ => switch (_kindOf(ext)) {
+          TransferFileKind.image => Icons.image_outlined,
+          TransferFileKind.video => Icons.movie_outlined,
+          _ => Icons.insert_drive_file_outlined,
+        },
     };
 
     return Container(

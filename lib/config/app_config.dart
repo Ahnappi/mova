@@ -33,14 +33,70 @@ class AppConfig {
   /// 避免发送快于网络时把内存撑爆——这是能稳定传大文件的关键。
   static const int maxInFlightBytes = 8 * 1024 * 1024;
 
-  /// 允许传输的文件扩展名（v1 仅办公文档）。
-  static const List<String> allowedFileExtensions = [
+  /// 允许传输的图片扩展名。
+  static const List<String> imageExtensions = [
+    'jpg',
+    'jpeg',
+    'png',
+    'gif',
+    'webp',
+    'bmp',
+    'heic',
+    'heif',
+    'tif',
+    'tiff',
+    'svg',
+    'ico',
+  ];
+
+  /// 允许传输的视频扩展名。
+  static const List<String> videoExtensions = [
+    'mp4',
+    'mov',
+    'm4v',
+    'avi',
+    'mkv',
+    'flv',
+    'wmv',
+    'webm',
+    '3gp',
+    'mpg',
+    'mpeg',
+    'ts',
+  ];
+
+  /// 允许传输的文档扩展名。
+  static const List<String> documentExtensions = [
     'pdf',
     'doc',
     'docx',
     'xls',
     'xlsx',
   ];
+
+  /// 允许传输的文件扩展名（图片 / 视频 / 常见文档）。
+  static const List<String> allowedFileExtensions = [
+    ...documentExtensions,
+    ...imageExtensions,
+    ...videoExtensions,
+  ];
+
+  /// 用于界面提示的类型概览（避免把几十个扩展名罗列出来）。
+  static const String allowedSummary = '图片 / 视频 / PDF / Office 文档';
+
+  /// 供 file_picker 使用的扩展名清单。
+  ///
+  /// 部分平台（尤其 Windows）的选择器对扩展名大小写敏感，
+  /// 因此额外带上纯大写与首字母大写两种变体，避免 .JPG / .MOV 选不到。
+  static List<String> get allowedExtensionsWithCaseVariants {
+    final result = <String>{};
+    for (final ext in allowedFileExtensions) {
+      result.add(ext);
+      result.add(ext.toUpperCase());
+      result.add(ext[0].toUpperCase() + ext.substring(1));
+    }
+    return result.toList(growable: false);
+  }
 
   /// 进度刷新间隔：高频分块时按此节流，避免每块都触发整页重建。
   static const Duration progressThrottle = Duration(milliseconds: 100);

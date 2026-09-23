@@ -117,7 +117,7 @@ class TransferViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  String get _allowedText => AppConfig.allowedFileExtensions.join(' / ');
+  String get _allowedText => AppConfig.allowedSummary;
 
   Future<void> _send(List<PickedFile> files) async {
     final result = await _transferRepository.sendFiles(files);

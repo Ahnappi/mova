@@ -2,6 +2,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../config/app_config.dart';
 import '../../../domain/models/chat/chat_message.dart';
 import '../../../domain/models/chat/connection_status.dart';
 import '../../../domain/models/chat/peer.dart';
@@ -503,27 +504,28 @@ class _DiscoverySection extends StatelessWidget {
                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
               ),
               const Spacer(),
-              PressableScale(
-                onTap: connection.restartDiscovery,
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  child: Row(
-                    children: [
-                      Icon(Icons.refresh_rounded,
-                          size: 15, color: AppColors.primary),
-                      SizedBox(width: 4),
-                      Text(
-                        '重新搜索',
-                        style: TextStyle(
-                          color: AppColors.primary,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
+              if (connection.isDiscovering)
+                PressableScale(
+                  onTap: connection.stopDiscovery,
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    child: Row(
+                      children: [
+                        Icon(Icons.stop_rounded,
+                            size: 15, color: AppColors.textSecondary),
+                        SizedBox(width: 4),
+                        Text(
+                          '停止搜索',
+                          style: TextStyle(
+                            color: AppColors.textSecondary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -536,18 +538,23 @@ class _DiscoverySection extends StatelessWidget {
                     color: AppColors.danger, fontSize: 12),
               ),
             ),
-          for (var i = 0; i < peers.length; i++)
-            Entrance(
-              delay: AppMotion.stagger * i,
-              child: _DeviceCard(
-                peer: peers[i],
-                onConnect: () => connection.connectToPeer(peers[i]),
+          // 未开启搜索：给一个明确入口，默认不在后台持续扫描。
+          if (!connection.isDiscovering)
+            const _DiscoveryIdleHint()
+          else ...[
+            for (var i = 0; i < peers.length; i++)
+              Entrance(
+                delay: AppMotion.stagger * i,
+                child: _DeviceCard(
+                  peer: peers[i],
+                  onConnect: () => connection.connectToPeer(peers[i]),
+                ),
               ),
-            ),
-          if (peers.isEmpty)
-            const _SearchingRow(text: '正在搜索附近的设备…')
-          else
-            const _SearchingRow(text: '正在搜索更多设备…'),
+            if (peers.isEmpty)
+              const _SearchingRow(text: '正在搜索附近的设备…')
+            else
+              const _SearchingRow(text: '正在搜索更多设备…'),
+          ],
           const SizedBox(height: 6),
           _ManualConnect(
             ipController: ipController,
@@ -637,6 +644,61 @@ class _DeviceCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 未开启搜索时的占位卡片：只给入口，不自动扫描。
+class _DiscoveryIdleHint extends StatelessWidget {
+  const _DiscoveryIdleHint();
+
+  @override
+  Widget build(BuildContext context) {
+    final connection = context.read<ConnectionViewModel>();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceMuted,
+        borderRadius: BorderRadius.circular(AppDimens.radiusCard),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.wifi_tethering_off_rounded,
+              size: 18, color: AppColors.textSecondary),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Text(
+              '未开启设备搜索。你也可以直接在下方手动输入对方 IP 直连。',
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          PressableScale(
+            onTap: connection.startDiscovery,
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.primary,
+                borderRadius: BorderRadius.circular(AppDimens.radiusPill),
+              ),
+              child: const Text(
+                '开始搜索',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1131,7 +1193,7 @@ class _DropOverlay extends StatelessWidget {
                 ),
                 SizedBox(height: 4),
                 Text(
-                  '支持 pdf / doc / docx / xls / xlsx',
+                  '支持 ${AppConfig.allowedSummary}',
                   style: TextStyle(
                       color: AppColors.textSecondary, fontSize: 12),
                 ),
