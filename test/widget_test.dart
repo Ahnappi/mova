@@ -16,7 +16,8 @@ void main() {
     await tester.pump();
 
     expect(find.byType(MaterialApp), findsOneWidget);
-    expect(find.text('Mova'), findsOneWidget);
+    // 未连接时的主界面：状态徽章 + 设备发现区。
     expect(find.text('未连接'), findsOneWidget);
+    expect(find.text('附近设备'), findsOneWidget);
   });
 }

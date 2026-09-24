@@ -7,6 +7,7 @@ import '../../../domain/models/chat/chat_message.dart';
 import '../../../domain/models/chat/connection_status.dart';
 import '../../../domain/models/chat/peer.dart';
 import '../../../domain/models/transfer/transfer_task.dart';
+import '../../history/widgets/history_panel.dart';
 import '../../storage/widgets/storage_paths_dialog.dart';
 import '../../transfer/view_models/transfer_view_model.dart';
 import '../../transfer/widgets/transfer_card.dart';
@@ -33,6 +34,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   bool _dragging = false;
   bool _manualOpen = false;
+
+  /// 右侧「连接记录」抽屉是否展开。
+  bool _historyOpen = false;
 
   /// 聊天流上次长度：新条目进来自动滚动到底部并做入场动效。
   int _lastTimelineLength = 0;
@@ -66,48 +70,100 @@ class _ChatScreenState extends State<ChatScreen> {
 
     return Scaffold(
       // 整个窗口都是拖放区：把文件拖进来即可发送。
-      body: DropTarget(
-        onDragEntered: (_) => _setDragging(true),
-        onDragExited: (_) => _setDragging(false),
-        onDragDone: (details) => _handleDrop(details.files),
-        child: Stack(
-          children: [
-            Column(
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final panelWidth = (constraints.maxWidth * 0.62).clamp(360.0, 620.0);
+
+          return DropTarget(
+            onDragEntered: (_) => _setDragging(true),
+            onDragExited: (_) => _setDragging(false),
+            onDragDone: (details) => _handleDrop(details.files),
+            child: Stack(
               children: [
-                _Header(connection: connection),
-                _Subtitle(connection: connection),
-                if (!connection.isConnected) ...[
-                  _DiscoverySection(
-                    connection: connection,
-                    ipController: _ipController,
-                    manualOpen: _manualOpen,
-                    onToggleManual: () =>
-                        setState(() => _manualOpen = !_manualOpen),
-                    onConnectManual: () => _connectManual(connection),
-                  ),
-                  const Divider(height: 1),
-                ],
-                Expanded(
-                  child: _TimelineArea(
-                    entries: timeline,
-                    controller: _scrollController,
-                    animateLast: hasNew,
-                    onAnimateLast: _scrollToBottom,
+                // 条件子项会让后面的 Element 按「索引」错位复用：
+                // 打开抽屉或拖入文件时插入新 child，会把面板那个位置
+                // 错配给别的 widget，导致面板被卸载重建、状态丢失。
+                // 因此每一项都带 key，保证按 key 匹配。
+                KeyedSubtree(
+                  key: const ValueKey('main'),
+                  child: Column(
+                    children: [
+                      _Header(
+                        connection: connection,
+                        onOpenHistory: () => setState(() => _historyOpen = true),
+                      ),
+                      _Subtitle(connection: connection),
+                      if (!connection.isConnected) ...[
+                        _DiscoverySection(
+                          connection: connection,
+                          ipController: _ipController,
+                          manualOpen: _manualOpen,
+                          onToggleManual: () =>
+                              setState(() => _manualOpen = !_manualOpen),
+                          onConnectManual: () => _connectManual(connection),
+                        ),
+                        const Divider(height: 1),
+                      ],
+                      Expanded(
+                        child: _TimelineArea(
+                          entries: timeline,
+                          controller: _scrollController,
+                          animateLast: hasNew,
+                          onAnimateLast: _scrollToBottom,
+                        ),
+                      ),
+                      if (connection.isConnected)
+                        _SaveDirectoryLine(transfer: transfer),
+                      _InputBar(
+                        messageController: _messageController,
+                        enabled: connection.isConnected,
+                        onSend: _send,
+                        onPickFiles: transfer.pickAndSendFiles,
+                      ),
+                    ],
                   ),
                 ),
-                if (connection.isConnected)
-                  _SaveDirectoryLine(transfer: transfer),
-                _InputBar(
-                  messageController: _messageController,
-                  enabled: connection.isConnected,
-                  onSend: _send,
-                  onPickFiles: transfer.pickAndSendFiles,
+                if (_dragging)
+                  const KeyedSubtree(
+                    key: ValueKey('drop'),
+                    child: _DropOverlay(),
+                  ),
+                // 抽屉打开时的轻遮罩：点一下就收起。
+                if (_historyOpen)
+                  KeyedSubtree(
+                    key: const ValueKey('scrim'),
+                    child: Positioned.fill(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => setState(() => _historyOpen = false),
+                        child: Container(
+                          color: Colors.black.withValues(alpha: 0.06),
+                        ),
+                      ),
+                    ),
+                  ),
+                // 右侧「连接记录」抽屉：关闭时滑出屏幕外，不挡主界面。
+                KeyedSubtree(
+                  key: const ValueKey('history'),
+                  child: Positioned(
+                    top: 0,
+                    bottom: 0,
+                    right: 0,
+                    width: panelWidth,
+                    child: AnimatedSlide(
+                      offset: _historyOpen ? Offset.zero : const Offset(1, 0),
+                      duration: AppMotion.quick,
+                      curve: AppMotion.curve,
+                      child: HistoryPanel(
+                        onClose: () => setState(() => _historyOpen = false),
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
-            if (_dragging) const _DropOverlay(),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -217,11 +273,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
 // ---------- 顶栏 ----------
 
-/// 顶栏：左侧状态徽章（+断开），右侧本机地址胶囊与数据存放位置按钮。
+/// 顶栏：左侧状态徽章（+断开），右侧本机地址胶囊、连接记录与数据存放位置按钮。
 class _Header extends StatelessWidget {
-  const _Header({required this.connection});
+  const _Header({required this.connection, required this.onOpenHistory});
 
   final ConnectionViewModel connection;
+  final VoidCallback onOpenHistory;
 
   @override
   Widget build(BuildContext context) {
@@ -290,6 +347,21 @@ class _Header extends StatelessWidget {
                       size: 15, color: AppColors.textSecondary),
                 ],
               ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          PressableScale(
+            onTap: onOpenHistory,
+            child: Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                border: Border.all(color: AppColors.border),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.history_rounded,
+                  size: 18, color: AppColors.textPrimary),
             ),
           ),
           const SizedBox(width: 10),

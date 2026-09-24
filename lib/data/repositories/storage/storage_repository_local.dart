@@ -1,4 +1,6 @@
+import '../../../config/app_config.dart';
 import '../../../domain/models/storage/storage_entry.dart';
+import '../../repositories/history/history_repository.dart';
 import '../../services/storage/log_service.dart';
 import '../../services/storage/settings_service.dart';
 import '../../services/storage/storage_service.dart';
@@ -10,13 +12,16 @@ class StorageRepositoryLocal implements StorageRepository {
     required StorageService storageService,
     required SettingsService settingsService,
     required LogService logService,
+    required HistoryRepository historyRepository,
   })  : _storage = storageService,
         _settings = settingsService,
-        _log = logService;
+        _log = logService,
+        _history = historyRepository;
 
   final StorageService _storage;
   final SettingsService _settings;
   final LogService _log;
+  final HistoryRepository _history;
 
   @override
   Future<List<StorageEntry>> loadEntries() async {
@@ -57,6 +62,16 @@ class StorageRepositoryLocal implements StorageRepository {
         description: 'mova.log —— 仅用于排查问题，可安全删除',
         canDelete: true,
         deleteNote: '只是诊断信息，删除不影响任何功能，会自动重建',
+      ),
+      StorageEntry(
+        id: 'history',
+        title: '连接记录',
+        path: await _history.historyFilePath(),
+        kind: StorageEntryKind.history,
+        description:
+            '${AppConfig.historyFileName} —— 每次连接的对话与文件清单（含当时的路径）',
+        canDelete: true,
+        deleteNote: '删除会清空全部连接记录，不可恢复；下次启动会重新建一个空文件',
       ),
       StorageEntry(
         id: 'temp',
@@ -101,6 +116,9 @@ class StorageRepositoryLocal implements StorageRepository {
         await _storage.clearDirectory(entry.path);
       case StorageEntryKind.settings:
         await _storage.deleteFile(entry.path);
+      case StorageEntryKind.history:
+        // 清空记录；进行中的连接会保留，避免当前会话无处可写。
+        await _history.clearAll();
       case StorageEntryKind.appData:
       case StorageEntryKind.receivedFiles:
         // 这两类不提供删除入口，避免误删用户文件。

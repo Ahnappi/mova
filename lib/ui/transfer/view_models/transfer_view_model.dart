@@ -4,8 +4,10 @@ import 'package:flutter/foundation.dart';
 import 'package:logging/logging.dart';
 
 import '../../../config/app_config.dart';
+import '../../../data/repositories/history/history_repository.dart';
 import '../../../data/repositories/transfer/transfer_repository.dart';
 import '../../../data/services/transfer/file_storage_service.dart';
+import '../../../domain/models/history/session_record.dart';
 import '../../../domain/models/transfer/picked_file.dart';
 import '../../../domain/models/transfer/transfer_task.dart';
 // 必须显式导入：result.dart 中的 Error 会覆盖 dart:core 的同名类。
@@ -16,10 +18,13 @@ class TransferViewModel extends ChangeNotifier {
   TransferViewModel({
     required TransferRepository transferRepository,
     required FileStorageService fileStorageService,
+    required HistoryRepository historyRepository,
   })  : _transferRepository = transferRepository,
-        _fileStorageService = fileStorageService {
+        _fileStorageService = fileStorageService,
+        _historyRepository = historyRepository {
     _tasksSub = _transferRepository.tasks.listen((tasks) {
       _tasks = tasks;
+      _recordFiles(tasks);
       notifyListeners();
     });
     unawaited(_loadSaveDirectory());
@@ -27,7 +32,11 @@ class TransferViewModel extends ChangeNotifier {
 
   final TransferRepository _transferRepository;
   final FileStorageService _fileStorageService;
+  final HistoryRepository _historyRepository;
   final Logger _log = Logger('TransferViewModel');
+
+  /// 已写入历史的「任务 id → 状态」，用于避免每 100ms 的进度刷新都写盘。
+  final Map<int, TransferStatus> _recordedStatus = <int, TransferStatus>{};
 
   StreamSubscription<List<TransferTask>>? _tasksSub;
 
@@ -65,6 +74,19 @@ class TransferViewModel extends ChangeNotifier {
   String? get lastMessage => _lastMessage;
 
   void clearMessage() => _lastMessage = null;
+
+  /// 把文件写入连接记录：只在「首次出现」和「状态变化」时写。
+  ///
+  /// 进度刷新每秒可达十次，逐次写盘既浪费又会拖慢传输，因此按状态去重。
+  void _recordFiles(List<TransferTask> tasks) {
+    for (final task in tasks) {
+      final previous = _recordedStatus[task.id];
+      if (previous == task.status) continue;
+
+      _recordedStatus[task.id] = task.status;
+      unawaited(_historyRepository.upsertFile(SessionFile.fromTask(task)));
+    }
+  }
 
   Future<void> _loadSaveDirectory() async {
     _saveDirectory = await _fileStorageService.currentSaveDirectory();

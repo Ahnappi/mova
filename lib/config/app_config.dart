@@ -112,6 +112,15 @@ class AppConfig {
   /// 日志文件名。
   static const String logFileName = 'mova.log';
 
+  /// 连接记录文件名（位于应用数据目录下）。
+  static const String historyFileName = 'history.json';
+
+  /// 连接记录文件格式版本：后续字段变更时用于兼容升级。
+  static const int historyFileVersion = 1;
+
+  /// 连接记录落盘合并延迟：期间的多条变更合并成一次写文件。
+  static const Duration historyPersistDelay = Duration(milliseconds: 400);
+
   /// 单个日志文件的大小上限，超过后轮转为 `mova.log.1`，避免日志无限增长。
   static const int maxLogFileBytes = 2 * 1024 * 1024;
 }

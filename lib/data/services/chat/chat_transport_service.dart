@@ -44,6 +44,11 @@ class ChatTransportService {
   /// 对端名称（收到对端 hello 后可用）。
   String? remoteName;
 
+  /// 对端 IP（连接建立后可用；断开后仍保留上一次的值，供收尾时使用）。
+  String? get remoteAddress => _socket?.remoteAddress.address ?? _lastRemoteAddress;
+
+  String? _lastRemoteAddress;
+
   /// 本机显示名，发送时作为 sender 带上。
   String localName = '本机';
 
@@ -191,8 +196,9 @@ class ChatTransportService {
     _socketSub = null;
     _socket?.destroy();
     _socket = null;
-    remoteName = null;
+    // 先通知断开、再清名字：上层收尾（写历史）时还要用到对端信息。
     _statusController.add(ConnectionStatus.disconnected);
+    remoteName = null;
   }
 
   /// 释放全部资源（含监听与流控制器）。
@@ -220,6 +226,7 @@ class ChatTransportService {
 
     _socket = socket;
     remoteName = null;
+    _lastRemoteAddress = socket.remoteAddress.address;
     _statusController.add(ConnectionStatus.connected);
 
     // 建连后互报名字。

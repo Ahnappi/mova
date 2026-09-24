@@ -16,6 +16,9 @@ enum StorageEntryKind {
 
   /// 接收文件的保存目录。
   receivedFiles,
+
+  /// 连接记录（history.json）。
+  history,
 }
 
 class StorageEntry {

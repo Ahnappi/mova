@@ -15,6 +15,9 @@ abstract class ChatRepository {
   /// 对端名称（握手后可用，未连接时为 null）。
   String? get remoteName;
 
+  /// 对端 IP（连接建立后可用，未连接时为 null）。
+  String? get remoteAddress;
+
   /// 本机显示名。
   set localName(String value);
 

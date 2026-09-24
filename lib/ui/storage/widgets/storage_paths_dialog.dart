@@ -368,6 +368,7 @@ class _EntryRow extends StatelessWidget {
         StorageEntryKind.logs => Icons.article_outlined,
         StorageEntryKind.temp => Icons.folder_outlined,
         StorageEntryKind.receivedFiles => Icons.folder_outlined,
+        StorageEntryKind.history => Icons.history_rounded,
       };
 }
 

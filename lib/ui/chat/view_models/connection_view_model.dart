@@ -6,6 +6,7 @@ import 'package:logging/logging.dart';
 import '../../../config/app_config.dart';
 import '../../../data/repositories/chat/chat_repository.dart';
 import '../../../data/repositories/discovery/discovery_repository.dart';
+import '../../../data/repositories/history/history_repository.dart';
 import '../../../data/services/network/network_info_service.dart';
 import '../../../domain/models/chat/connection_status.dart';
 import '../../../domain/models/chat/local_info.dart';
@@ -21,13 +22,16 @@ class ConnectionViewModel extends ChangeNotifier {
     required DiscoveryRepository discoveryRepository,
     required ChatRepository chatRepository,
     required NetworkInfoService networkInfoService,
+    required HistoryRepository historyRepository,
   })  : _discoveryRepository = discoveryRepository,
         _chatRepository = chatRepository,
-        _networkInfoService = networkInfoService;
+        _networkInfoService = networkInfoService,
+        _historyRepository = historyRepository;
 
   final DiscoveryRepository _discoveryRepository;
   final ChatRepository _chatRepository;
   final NetworkInfoService _networkInfoService;
+  final HistoryRepository _historyRepository;
 
   final Logger _log = Logger('ConnectionViewModel');
 
@@ -39,6 +43,9 @@ class ConnectionViewModel extends ChangeNotifier {
   ConnectionStatus _status = ConnectionStatus.disconnected;
   String? _errorMessage;
   bool _initialized = false;
+
+  /// 本次连接对应的历史记录 id（连接成功后才有）。
+  String? _sessionId;
 
   /// 是否正在搜索局域网设备（由用户在界面上手动开启/关闭）。
   bool _discovering = false;
@@ -70,10 +77,16 @@ class ConnectionViewModel extends ChangeNotifier {
     _initialized = true;
 
     _statusSub = _chatRepository.status.listen((status) {
+      final previous = _status;
       _status = status;
-      // 连上之后设备搜索就没意义了，自动停下，避免一直在局域网里广播。
-      if (status == ConnectionStatus.connected && _discovering) {
-        unawaited(stopDiscovery());
+
+      if (status == ConnectionStatus.connected) {
+        // 连上之后设备搜索就没意义了，自动停下，避免一直在局域网里广播。
+        if (_discovering) unawaited(stopDiscovery());
+        unawaited(_openSession());
+      } else if (previous == ConnectionStatus.connected) {
+        // 从已连接变为非连接：收尾这次会话。
+        unawaited(_closeSession());
       }
       notifyListeners();
     });
@@ -151,8 +164,47 @@ class ConnectionViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---------- 连接记录 ----------
+
+  /// 连接成功：开一条连接记录，后续消息与文件都挂在它下面。
+  Future<void> _openSession() async {
+    _sessionId = await _historyRepository.startSession(
+      peerName: _chatRepository.remoteName ?? '对方',
+      peerIp: _chatRepository.remoteAddress ?? '',
+    );
+
+    // 对端名在 hello 帧里，可能比连接状态晚一点点到达，稍后补一次。
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    final id = _sessionId;
+    if (id == null) return;
+    await _historyRepository.updateSessionPeer(
+      id,
+      peerName: _chatRepository.remoteName,
+      peerIp: _chatRepository.remoteAddress,
+    );
+  }
+
+  /// 断开：补全对端信息并结束这条记录。
+  Future<void> _closeSession() async {
+    final id = _sessionId;
+    if (id == null) return;
+    _sessionId = null;
+
+    await _historyRepository.updateSessionPeer(
+      id,
+      peerName: _chatRepository.remoteName,
+      peerIp: _chatRepository.remoteAddress,
+    );
+    await _historyRepository.endSession(id);
+  }
+
   @override
   void dispose() {
+    final id = _sessionId;
+    if (id != null) {
+      _sessionId = null;
+      unawaited(_historyRepository.endSession(id));
+    }
     _statusSub?.cancel();
     _peersSub?.cancel();
     super.dispose();

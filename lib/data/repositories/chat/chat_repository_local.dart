@@ -28,6 +28,9 @@ class ChatRepositoryLocal implements ChatRepository {
   String? get remoteName => _service.remoteName;
 
   @override
+  String? get remoteAddress => _service.remoteAddress;
+
+  @override
   set localName(String value) => _service.localName = value;
 
   @override

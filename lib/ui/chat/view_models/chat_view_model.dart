@@ -4,18 +4,24 @@ import 'package:flutter/foundation.dart';
 import 'package:logging/logging.dart';
 
 import '../../../data/repositories/chat/chat_repository.dart';
+import '../../../data/repositories/history/history_repository.dart';
 import '../../../domain/models/chat/chat_message.dart';
+import '../../../domain/models/history/session_record.dart';
 // 必须显式导入：result.dart 中的 Error 会覆盖 dart:core 的同名类。
 import '../../../utils/result.dart';
 
 /// 消息视图模型（ViewModel 层）：维护消息列表并发送文本。
 class ChatViewModel extends ChangeNotifier {
-  ChatViewModel({required ChatRepository chatRepository})
-      : _chatRepository = chatRepository {
+  ChatViewModel({
+    required ChatRepository chatRepository,
+    required HistoryRepository historyRepository,
+  })  : _chatRepository = chatRepository,
+        _historyRepository = historyRepository {
     _subscription = _chatRepository.messages.listen(_onMessage);
   }
 
   final ChatRepository _chatRepository;
+  final HistoryRepository _historyRepository;
   final Logger _log = Logger('ChatViewModel');
 
   StreamSubscription<ChatMessage>? _subscription;
@@ -48,6 +54,17 @@ class ChatViewModel extends ChangeNotifier {
   void _onMessage(ChatMessage message) {
     _messages = <ChatMessage>[..._messages, message];
     notifyListeners();
+
+    unawaited(
+      _historyRepository.appendMessage(
+        SessionMessage(
+          text: message.text,
+          sender: message.sender,
+          isSelf: message.isSelf,
+          timestamp: message.timestamp,
+        ),
+      ),
+    );
   }
 
   @override
