@@ -109,10 +109,17 @@ class TransferViewModel extends ChangeNotifier {
     _errorMessage = null;
     notifyListeners();
 
-    final List<PickedFile> picked = await _fileStorageService.pickFiles();
-    if (picked.isEmpty) return;
+    final picked = await _fileStorageService.pickFiles();
+    if (picked.accepted.isEmpty) {
+      if (picked.ignored.isNotEmpty) {
+        _lastMessage = '这些文件暂不支持（仅支持 $_allowedText）';
+        notifyListeners();
+      }
+      return;
+    }
 
-    await _send(picked);
+    await _send(picked.accepted);
+    _reportResult(picked.accepted.length, picked.ignored.length);
   }
 
   /// 发送拖拽进来的文件路径；不支持的类型会被忽略并给出提示。
@@ -130,12 +137,14 @@ class TransferViewModel extends ChangeNotifier {
     }
 
     await _send(parsed.accepted);
+    _reportResult(parsed.accepted.length, parsed.ignored.length);
+  }
 
-    final ignoredHint = parsed.ignored.isEmpty
-        ? ''
-        : '，已忽略 ${parsed.ignored.length} 个不支持的项';
-    _lastMessage =
-        '已发起 ${parsed.accepted.length} 个文件$ignoredHint';
+  /// 统一给出「发起了几个、忽略了几个」的一次性提示。
+  void _reportResult(int acceptedCount, int ignoredCount) {
+    final ignoredHint =
+        ignoredCount == 0 ? '' : '，已忽略 $ignoredCount 个不支持的项';
+    _lastMessage = '已发起 $acceptedCount 个文件$ignoredHint';
     notifyListeners();
   }
 

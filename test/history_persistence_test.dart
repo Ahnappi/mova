@@ -122,6 +122,8 @@ void main() {
     final received = <List<SessionRecord>>[];
     final subscription = repository.sessions.listen(received.add);
     await repository.load(); // 新 ViewModel 会调 refresh()
+    // 广播流是异步投递的，让出一次事件循环再断言。
+    await Future<void>.delayed(Duration.zero);
 
     expect(received, isNotEmpty);
     expect(received.last.length, 1);

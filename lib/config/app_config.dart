@@ -50,19 +50,120 @@ class AppConfig {
   ];
 
   /// 允许传输的视频扩展名。
+  ///
+  /// 视频封装极其零散——手机、相机、非编软件、监控系统各有各的格式，
+  /// 只列十几个「常见格式」必然会有用户发不出去的文件，
+  /// 因此这里按「主流容器 / 摄像机与专业格式 / 裸流 / 老格式 / 监控录制」
+  /// 尽量覆盖市面上的格式。
   static const List<String> videoExtensions = [
+    // 主流容器与流媒体封装
     'mp4',
-    'mov',
     'm4v',
-    'avi',
+    'mp4v',
+    'mpg4',
+    'mov',
+    'qt',
     'mkv',
-    'flv',
-    'wmv',
+    'mk3d',
     'webm',
-    '3gp',
+    'avi',
+    'divx',
+    'xvid',
+    'flv',
+    'f4v',
+    'f4p',
+    'wmv',
+    'wm',
+    'wmx',
+    'asf',
+    'wtv',
+    'dvr',
+    'dvr-ms',
     'mpg',
     'mpeg',
+    'mpe',
+    'm1v',
+    'm2v',
+    'mpv',
+    'm2p',
+    'ps',
+    'pss',
+    'pva',
     'ts',
+    'm2ts',
+    'mts',
+    'm2t',
+    'tp',
+    'trp',
+    'vob',
+    'vro',
+    'dat',
+    'evo',
+    'ogv',
+    'ogx',
+    'ogg',
+    'rm',
+    'rmvb',
+    'rv',
+    '3gp',
+    '3g2',
+    '3gpp',
+    '3gpp2',
+    'amv',
+    'dpg',
+    'smv',
+    'mtv',
+    'svi',
+    'nsv',
+    'nut',
+    'gxf',
+    'mxf',
+    'ismv',
+    'ismt',
+    'hdmov',
+    'dmb',
+    'k3g',
+    'str',
+    // 摄像机、手机与专业 RAW 视频
+    'mod',
+    'tod',
+    'mqv',
+    'dv',
+    'dif',
+    'r3d',
+    'braw',
+    'ari',
+    'cin',
+    'drc',
+    'tivo',
+    // 裸流与编解码测试容器
+    'h264',
+    'h265',
+    'hevc',
+    '264',
+    '265',
+    'avc',
+    'av1',
+    'obu',
+    'ivf',
+    'vp8',
+    'vp9',
+    'y4m',
+    'mjp',
+    'mj2',
+    // 老格式与游戏过场动画
+    'fli',
+    'flc',
+    'mve',
+    'vmd',
+    'bik',
+    'bk2',
+    'roq',
+    'smk',
+    'swf',
+    // 监控设备录制
+    'dav',
+    'vdr',
   ];
 
   /// 允许传输的文档扩展名。
@@ -81,22 +182,12 @@ class AppConfig {
     ...videoExtensions,
   ];
 
-  /// 用于界面提示的类型概览（避免把几十个扩展名罗列出来）。
-  static const String allowedSummary = '图片 / 视频 / PDF / Office 文档';
+  /// 允许传输的扩展名集合（全小写）：拖拽批量校验时的 O(1) 查表。
+  static final Set<String> allowedFileExtensionSet =
+      allowedFileExtensions.toSet();
 
-  /// 供 file_picker 使用的扩展名清单。
-  ///
-  /// 部分平台（尤其 Windows）的选择器对扩展名大小写敏感，
-  /// 因此额外带上纯大写与首字母大写两种变体，避免 .JPG / .MOV 选不到。
-  static List<String> get allowedExtensionsWithCaseVariants {
-    final result = <String>{};
-    for (final ext in allowedFileExtensions) {
-      result.add(ext);
-      result.add(ext.toUpperCase());
-      result.add(ext[0].toUpperCase() + ext.substring(1));
-    }
-    return result.toList(growable: false);
-  }
+  /// 用于界面提示的类型概览（避免把上百个扩展名罗列出来）。
+  static const String allowedSummary = '图片 / 视频 / PDF / Office 文档';
 
   /// 进度刷新间隔：高频分块时按此节流，避免每块都触发整页重建。
   static const Duration progressThrottle = Duration(milliseconds: 100);

@@ -21,26 +21,34 @@ class FileStorageService {
   final SettingsService _settings;
   final StorageService _storage;
 
-  /// 弹出文件选择器，只允许 [AppConfig.allowedFileExtensions] 中的类型。
-  Future<List<PickedFile>> pickFiles() async {
+  /// 弹出文件选择器，返回「可发送的文件」与「被忽略的文件名」。
+  ///
+  /// 这里没有用 `FileType.custom` + `allowedExtensions` 让系统对话框去过滤，
+  /// 而是允许选择任意文件后在 Dart 侧校验，原因有两个：
+  /// 1. 各平台选择器对扩展名大小写敏感，`.MOV` / `.JPG` 会被直接过滤掉；
+  /// 2. 视频格式清单上百项，再乘以大小写变体会让原生过滤器字符串过长。
+  /// 自己做校验后，行为在 macOS / Windows 上完全一致，且不受清单长度限制。
+  Future<({List<PickedFile> accepted, List<String> ignored})> pickFiles() async {
     // 只取路径，不把文件内容读进内存（大文件关键）。
-    final files = await FilePicker.pickFiles(
-      type: FileType.custom,
-      // file_picker 的 allowedExtensions 在某些平台上是大小写敏感的，
-      // 这里把大小写变体都带上（如 .JPG / .MOV），避免选择文件时被过滤掉。
-      allowedExtensions: AppConfig.allowedExtensionsWithCaseVariants,
-    );
-    if (files.isEmpty) return const <PickedFile>[];
+    final files = await FilePicker.pickFiles(type: FileType.any);
+    if (files.isEmpty) {
+      return (accepted: const <PickedFile>[], ignored: const <String>[]);
+    }
 
-    final picked = <PickedFile>[];
+    final accepted = <PickedFile>[];
+    final ignored = <String>[];
     for (final file in files) {
       final path = file.path;
       if (path == null) continue;
+      if (!isAllowedFile(file.name)) {
+        ignored.add(file.name);
+        continue;
+      }
       // 平台不保证返回大小，取不到就自己 stat 一次（不读内容，开销可忽略）。
       final size = file.lengthSync() ?? await File(path).length();
-      picked.add(PickedFile(path: path, name: file.name, size: size));
+      accepted.add(PickedFile(path: path, name: file.name, size: size));
     }
-    return picked;
+    return (accepted: accepted, ignored: ignored);
   }
 
   /// 弹出目录选择器，返回目录路径（用户取消时为 null）。
@@ -64,7 +72,7 @@ class FileStorageService {
   /// 扩展名是否在允许范围内（不区分大小写）。
   bool isAllowedFile(String name) {
     final ext = p.extension(name).replaceFirst('.', '').toLowerCase();
-    return AppConfig.allowedFileExtensions.contains(ext);
+    return AppConfig.allowedFileExtensionSet.contains(ext);
   }
 
   /// 把拖拽进来的路径转成可发送的文件，跳过目录与类型不支持的项。
