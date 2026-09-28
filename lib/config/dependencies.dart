@@ -1,6 +1,11 @@
+import 'dart:async';
+
+import 'package:logging/logging.dart';
 import 'package:provider/provider.dart';
 import 'package:provider/single_child_widget.dart';
 
+import 'app_shutdown.dart';
+import 'window_controller.dart';
 import '../data/repositories/chat/chat_repository.dart';
 import '../data/repositories/chat/chat_repository_local.dart';
 import '../data/repositories/counter/counter_repository.dart';
@@ -21,7 +26,10 @@ import '../data/services/network/network_info_service.dart';
 import '../data/services/storage/log_service.dart';
 import '../data/services/storage/settings_service.dart';
 import '../data/services/storage/storage_service.dart';
+import '../data/services/system/file_opener_service.dart';
+import '../data/services/system/system_settings_service.dart';
 import '../data/services/transfer/file_storage_service.dart';
+import '../data/services/transfer/incoming_file_writer.dart';
 import '../ui/chat/view_models/chat_view_model.dart';
 import '../ui/chat/view_models/connection_view_model.dart';
 import '../ui/counter/view_models/counter_view_model.dart';
@@ -35,9 +43,14 @@ import '../ui/transfer/view_models/transfer_view_model.dart';
 ///
 /// [storageService] / [logService] 可由入口传入，
 /// 以便日志在 runApp 之前就开始落盘（见 main.dart）。
+///
+/// [window] 同样是**为了测试**：Widget 测试没有原生插件实现，
+/// 直接调 `windowManager.setPreventClose()` 会抛 MissingPluginException。
+/// 注入替身之后，退出流程这条入口才能被真正验证。
 List<SingleChildWidget> buildProviders({
   StorageService? storageService,
   LogService? logService,
+  WindowController? window,
 }) {
   final storage = storageService ?? StorageService();
   final log = logService ?? LogService(storage);
@@ -64,11 +77,20 @@ List<SingleChildWidget> buildProviders({
     Provider(create: (context) => HistoryStorageService(context.read())),
 
     // Repository 层（先于存储装配：存储条目要展示记录文件的路径）
+    //
+    // 注意：这个 dispose 回调是**同步**的，宿主不会 await 它，
+    // 因此它只能算「兜底的尽力保存」。真正的退出流程在 [AppShutdown]
+    // 里：那里会 await 这里的 dispose()，等写入队列落地后再写最终快照。
+    //
+    // 写盘失败时 dispose() 会抛出（见 HistoryRepositoryLocal），
+    // `unawaited` 又没人接结果，不 catchError 就是一条没人管的异步错误。
     Provider(
       create: (context) =>
           HistoryRepositoryLocal(context.read()) as HistoryRepository,
       dispose: (_, repository) {
-        repository.dispose();
+        unawaited(repository.dispose().catchError((Object e) {
+          Logger('HistoryRepository').warning('兜底的收尾保存失败：$e');
+        }));
       },
     ),
 
@@ -85,6 +107,9 @@ List<SingleChildWidget> buildProviders({
     // ---------- 局域网互传 ----------
     // Service 层
     Provider(create: (context) => NetworkInfoService()),
+    Provider(create: (context) => SystemSettingsService()),
+    // 应用内预览不了的格式（Office / SVG / HEIC）用它交给系统打开。
+    Provider(create: (context) => FileOpenerService()),
     Provider(
       create: (context) => DiscoveryService(),
       dispose: (_, service) {
@@ -104,6 +129,13 @@ List<SingleChildWidget> buildProviders({
         storageService: context.read(),
       ),
     ),
+    // 接收端后台落盘（独立 isolate），由传输仓储持有。
+    Provider(
+      create: (context) => IncomingFileWriter(),
+      dispose: (_, writer) {
+        unawaited(writer.dispose());
+      },
+    ),
 
     // Repository 层
     Provider(
@@ -120,11 +152,33 @@ List<SingleChildWidget> buildProviders({
       },
     ),
     Provider(
-      create: (context) =>
-          TransferRepositoryLocal(context.read(), context.read())
-              as TransferRepository,
+      create: (context) => TransferRepositoryLocal(
+        context.read(),
+        context.read(),
+        writer: context.read(),
+      ) as TransferRepository,
       dispose: (_, repository) {
         repository.dispose();
+      },
+    ),
+
+    // 退出流程：[AppShutdown] 要接管窗口关闭，必须在应用一开始就建好，
+    // 因此这里 `lazy: false`——否则没人 read 它，它永远不会被创建，
+    // 用户关窗口时也就没有任何人去保存最后一批记录。
+    Provider(
+      lazy: false,
+      create: (context) {
+        final shutdown = AppShutdown(
+          history: context.read(),
+          chat: context.read(),
+          transfer: context.read(),
+          window: window ?? const WindowManagerController(),
+        );
+        unawaited(shutdown.start());
+        return shutdown;
+      },
+      dispose: (_, shutdown) {
+        unawaited(shutdown.stop());
       },
     ),
 
@@ -135,6 +189,7 @@ List<SingleChildWidget> buildProviders({
         chatRepository: context.read(),
         networkInfoService: context.read(),
         historyRepository: context.read(),
+        systemSettingsService: context.read(),
       ),
     ),
     ChangeNotifierProvider(
@@ -146,8 +201,8 @@ List<SingleChildWidget> buildProviders({
     ChangeNotifierProvider(
       create: (context) => TransferViewModel(
         transferRepository: context.read(),
-        fileStorageService: context.read(),
         historyRepository: context.read(),
+        systemSettingsService: context.read(),
       ),
     ),
   ];

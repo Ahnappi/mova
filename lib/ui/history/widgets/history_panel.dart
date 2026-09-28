@@ -4,8 +4,10 @@ import 'package:provider/provider.dart';
 
 import '../../../data/repositories/history/history_repository.dart';
 import '../../../data/services/storage/storage_service.dart';
+import '../../../data/services/transfer/file_storage_service.dart';
 import '../../../domain/models/history/session_record.dart';
 import '../../../utils/format.dart';
+import '../../preview/widgets/file_preview_dialog.dart';
 import '../../theme/app_motion_widgets.dart';
 import '../../theme/app_theme.dart';
 import '../view_models/history_view_model.dart';
@@ -22,6 +24,7 @@ class HistoryPanel extends StatelessWidget {
       create: (context) => HistoryViewModel(
         historyRepository: context.read<HistoryRepository>(),
         storageService: context.read<StorageService>(),
+        fileStorageService: context.read<FileStorageService>(),
       ),
       child: _HistoryPanelBody(onClose: onClose),
     );
@@ -515,8 +518,14 @@ class _HistoryFileCard extends StatelessWidget {
                 ),
                 if (exists)
                   _SmallAction(
+                    tooltip: '预览',
+                    icon: Icons.preview_outlined,
+                    onTap: () => showFilePreview(context, path),
+                  ),
+                if (exists)
+                  _SmallAction(
                     tooltip: '在文件管理器中显示',
-                    icon: Icons.visibility_outlined,
+                    icon: Icons.folder_open_outlined,
                     onTap: () => vm.reveal(path),
                   ),
               ],

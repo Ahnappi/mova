@@ -2,9 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'config/dependencies.dart';
+import 'config/navigator_key.dart';
+import 'config/window_controller.dart';
 import 'data/services/storage/log_service.dart';
 import 'data/services/storage/storage_service.dart';
 import 'ui/chat/widgets/chat_screen.dart';
@@ -12,6 +16,11 @@ import 'ui/theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 视频预览引擎（libmpv）必须在 runApp 之前初始化。
+  MediaKit.ensureInitialized();
+  // 窗口管理：关窗口要先走完退出流程（保存连接记录），见 AppShutdown。
+  // 这一步必须在 runApp 之前——否则用户可能在拦截生效前就把窗口关了。
+  await windowManager.ensureInitialized();
 
   // 日志在 runApp 之前就接管，启动阶段的问题也能记录下来。
   final storageService = StorageService();
@@ -58,10 +67,14 @@ class MainApp extends StatelessWidget {
     super.key,
     required this.storageService,
     required this.logService,
+    this.window,
   });
 
   final StorageService storageService;
   final LogService logService;
+
+  /// 窗口操作替身（测试注入）：默认走真实的 window_manager 插件。
+  final WindowController? window;
 
   @override
   Widget build(BuildContext context) {
@@ -69,11 +82,14 @@ class MainApp extends StatelessWidget {
       providers: buildProviders(
         storageService: storageService,
         logService: logService,
+        window: window,
       ),
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
         title: 'Mova',
         theme: buildAppTheme(),
+        // 退出流程要在没有 BuildContext 的窗口回调里弹窗询问用户。
+        navigatorKey: appNavigatorKey,
         home: const ChatScreen(),
       ),
     );

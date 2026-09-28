@@ -42,6 +42,11 @@ post_install do |installer|
     # 避免第三方 pod（如 file_picker_darwin）自带的低版本导致构建失败。
     target.build_configurations.each do |config|
       config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '12.0'
+      # Xcode 16+ 默认开启 Swift 显式模块（explicit modules），此时
+      # media_kit_video 依赖的 mpv vendored framework 不会被隐式导入，
+      # 报错 "cannot find 'mpv_render_param' in scope"。关掉即可恢复
+      # 按 framework 搜索路径查找模块的老行为。
+      config.build_settings['SWIFT_ENABLE_EXPLICIT_MODULES'] = 'NO'
     end
   end
 end

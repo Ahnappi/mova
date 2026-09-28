@@ -5,6 +5,7 @@ class ChatMessage {
     required this.sender,
     required this.timestamp,
     required this.isSelf,
+    this.sessionId = '',
   });
 
   /// 消息正文。
@@ -18,4 +19,10 @@ class ChatMessage {
 
   /// 是否为本机发出（用于 UI 区分左右气泡）。
   final bool isSelf;
+
+  /// 所属会话标识。
+  ///
+  /// 换设备连接后，旧会话的迟到消息会被丢弃，
+  /// 不会混进新会话的聊天记录里。
+  final String sessionId;
 }

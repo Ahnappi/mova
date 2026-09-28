@@ -85,8 +85,12 @@ class SessionFile {
       );
 
   static SessionFileStatus _statusOf(TransferStatus status) => switch (status) {
+        TransferStatus.queued => SessionFileStatus.pending,
         TransferStatus.waiting => SessionFileStatus.pending,
+        TransferStatus.preparing => SessionFileStatus.pending,
         TransferStatus.transferring => SessionFileStatus.pending,
+        // 等回执阶段同样是「还没成」，不能记成已完成。
+        TransferStatus.confirming => SessionFileStatus.pending,
         TransferStatus.completed => SessionFileStatus.completed,
         TransferStatus.rejected => SessionFileStatus.rejected,
         TransferStatus.canceled => SessionFileStatus.canceled,

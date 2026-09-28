@@ -15,6 +15,28 @@ abstract class TransferRepository {
   /// 发送一组文件（内部串行发送，一次只向对端提一个请求）。
   Future<Result<void>> sendFiles(List<PickedFile> files);
 
+  // ---------- 文件选取与保存位置 ----------
+  //
+  // 这几项本质是「要发给谁 / 存到哪」的业务规则的一部分，
+  // 统一从这里暴露，ViewModel 就不再需要直接认识 FileStorageService。
+
+  /// 弹出文件选择器，返回可发送的文件与被忽略的文件名。
+  Future<({List<PickedFile> accepted, List<String> ignored})> pickFilesToSend();
+
+  /// 把拖拽进来的路径转成可发送的文件。
+  Future<({List<PickedFile> accepted, List<String> ignored})> filesFromPaths(
+    List<String> paths,
+  );
+
+  /// 当前接收文件的保存目录。
+  Future<String> currentSaveDirectory();
+
+  /// 弹出目录选择器（用户取消时为 null）。
+  Future<String?> pickSaveDirectory({String? dialogTitle});
+
+  /// 记住用户选择的保存目录。
+  Future<void> rememberSaveDirectory(String directory);
+
   /// 同意接收 [fileId]；[saveDirectory] 为空时用默认下载目录。
   Future<Result<void>> accept(int fileId, {String? saveDirectory});
 

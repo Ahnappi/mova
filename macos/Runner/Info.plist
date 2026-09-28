@@ -22,10 +22,16 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>mova 需要访问桌面文件夹，用于把你选择的文件发送给其他设备，或把收到的文件保存到这里。</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>mova 需要访问文档文件夹，用于把你选择的文件发送给其他设备，或把收到的文件保存到这里。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>mova 需要访问下载文件夹，用于把收到的文件保存到默认位置。</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>mova 需要访问局域网，用于发现同一网络下的其他设备并与之互传文本内容。</string>
+	<string>mova 需要访问局域网，用于发现同一网络下的其他设备并与之互传文本与文件。</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>

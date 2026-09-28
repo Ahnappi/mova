@@ -10,9 +10,15 @@ import '../../../utils/format.dart';
 import '../view_models/storage_view_model.dart';
 
 /// 打开「数据存放位置」弹窗（缩放 0.96→1 进场 / 反向出场）。
+///
+/// 点击弹窗外的遮罩即可关闭：modal 的 barrier 必须显式声明可点，
+/// 否则用户只能用底部的「完成」按钮退出。
 Future<void> showStoragePathsDialog(BuildContext context) {
   return showGeneralDialog(
     context: context,
+    barrierDismissible: true,
+    barrierLabel: '关闭',
+    barrierColor: Colors.black.withValues(alpha: 0.28),
     transitionDuration: AppMotion.dialogIn,
     transitionBuilder: (context, animation, secondaryAnimation, child) {
       final curved = CurvedAnimation(
@@ -83,19 +89,20 @@ class _StoragePathsDialogState extends State<StoragePathsDialog> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Expanded(
+                      // 这里不能用 const：副标题要读运行时的 vm.entries。
+                      Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
+                            const Text(
                               '数据存放位置',
                               style: TextStyle(
                                 fontSize: 19,
                                 fontWeight: FontWeight.w700,
                               ),
                             ),
-                            SizedBox(height: 6),
-                            _TotalSubtitle(),
+                            const SizedBox(height: 6),
+                            _TotalSubtitle(entries: vm.entries),
                           ],
                         ),
                       ),
@@ -104,7 +111,7 @@ class _StoragePathsDialogState extends State<StoragePathsDialog> {
                         child: Container(
                           width: 36,
                           height: 36,
-                          decoration: BoxDecoration(
+                          decoration: const BoxDecoration(
                             color: AppColors.surfaceMuted,
                             shape: BoxShape.circle,
                           ),
@@ -115,6 +122,20 @@ class _StoragePathsDialogState extends State<StoragePathsDialog> {
                                       strokeWidth: 2),
                                 )
                               : const Icon(Icons.refresh_rounded, size: 18),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      // 右上角关闭：与「点击外部关闭」并存，鼠标用户更习惯点这个。
+                      PressableScale(
+                        onTap: () => Navigator.of(context).pop(),
+                        child: Container(
+                          width: 36,
+                          height: 36,
+                          decoration: const BoxDecoration(
+                            color: AppColors.surfaceMuted,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.close_rounded, size: 18),
                         ),
                       ),
                     ],
@@ -243,15 +264,18 @@ class _StoragePathsDialogState extends State<StoragePathsDialog> {
   }
 }
 
-/// 「共 N 处 · 占用 X」副标题（读取 vm 后渲染）。
+/// 「共 N 处 · 占用 X」副标题。
+///
+/// 条目由外部传入：本弹窗的 ViewModel 是 State 的私有字段，并没有挂在
+/// Provider 树上，这里若用 `context.read<StorageViewModel>()` 会直接抛
+/// ProviderNotFoundException（弹窗一打开就红屏）。
 class _TotalSubtitle extends StatelessWidget {
-  const _TotalSubtitle();
+  const _TotalSubtitle({required this.entries});
+
+  final List<StorageEntry> entries;
 
   @override
   Widget build(BuildContext context) {
-    final vm = context.read<StorageViewModel>();
-    // 通过 AnimatedBuilder 的外部 builder 已经监听 vm；这里直接读快照。
-    final entries = vm.entries;
     final total = entries.fold<int>(0, (sum, e) => sum + e.sizeBytes);
 
     return Text(

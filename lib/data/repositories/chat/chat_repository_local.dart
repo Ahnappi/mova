@@ -25,6 +25,12 @@ class ChatRepositoryLocal implements ChatRepository {
   Stream<ConnectionStatus> get status => _service.status;
 
   @override
+  String? get sessionId => _service.sessionId;
+
+  @override
+  Stream<String> get notices => _service.notices;
+
+  @override
   String? get remoteName => _service.remoteName;
 
   @override
@@ -52,10 +58,17 @@ class ChatRepositoryLocal implements ChatRepository {
         sender: _service.localName,
         timestamp: DateTime.now(),
         isSelf: true,
+        sessionId: _service.sessionId ?? '',
       ),
     );
     return Result.ok(null);
   }
+
+  @override
+  Future<void> stopAcceptingConnections() => _service.seal();
+
+  @override
+  bool get sealed => _service.isSealed;
 
   @override
   Future<void> disconnect() => _service.disconnect();

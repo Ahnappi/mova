@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../config/app_config.dart';
 import '../../../domain/models/transfer/transfer_task.dart';
+import '../../preview/preview_kind.dart';
+import '../../preview/widgets/file_preview_dialog.dart';
 import '../../theme/app_motion_widgets.dart';
 import '../../theme/app_theme.dart';
 import '../../../utils/format.dart';
@@ -46,8 +49,14 @@ class TransferCard extends StatelessWidget {
   bool get _isOffer => task.direction == TransferDirection.receiving;
 
   Widget _buildStateCard(BuildContext context) {
+    // 「等回执」也算进行中：数据发完了，但还没确认对方存好。
+    // 「排队中」同样算：它随时会轮到自己。
     final inProgress =
-        task.status == TransferStatus.transferring || task.status == TransferStatus.waiting;
+        task.status == TransferStatus.transferring ||
+        task.status == TransferStatus.waiting ||
+        task.status == TransferStatus.queued ||
+        task.status == TransferStatus.preparing ||
+        task.status == TransferStatus.confirming;
 
     return Container(
       width: 460,
@@ -100,9 +109,15 @@ class TransferCard extends StatelessWidget {
                       ),
                       const Spacer(),
                       Text(
-                        inProgress && task.status == TransferStatus.transferring
-                            ? '${formatBytes(task.transferredBytes)} / ${formatBytes(task.totalBytes)} · ${formatSpeed(task.speedBytesPerSecond)}'
-                            : formatBytes(task.totalBytes),
+                        task.status == TransferStatus.transferring
+                            ? formatSpeed(task.speedBytesPerSecond)
+                            : task.status == TransferStatus.confirming
+                                ? '等待对方核对…'
+                                : task.status == TransferStatus.queued
+                                    ? '排队中，前面的文件传完就开始…'
+                                    : task.status == TransferStatus.preparing
+                                        ? '正在准备接收…'
+                                        : '等待对方确认…',
                         style: const TextStyle(
                           color: AppColors.textSecondary,
                           fontSize: 12,
@@ -111,13 +126,55 @@ class TransferCard extends StatelessWidget {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 4),
+                  // 第二行：已传/总量 + 预计剩余时间。
+                  // 剩余时间用平滑速度估算，刚开始传时还没有样本，显示「正在估算」。
+                  Row(
+                    children: [
+                      Text(
+                        '${formatBytes(task.transferredBytes)} / ${formatBytes(task.totalBytes)}',
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 12,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        _etaText(task),
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ],
+                  ),
                 ] else
-                  Text(
-                    _finishedText(task),
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 12,
-                    ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _finishedText(task),
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 12,
+                        ),
+                      ),
+                      // 失败原因常常是一长串系统错误，界面上放不下，
+                      // 给一个复制入口方便直接拿去查。
+                      if (task.status == TransferStatus.failed &&
+                          task.error != null) ...[
+                        const SizedBox(height: 6),
+                        _CopyErrorButton(message: task.error!),
+                      ],
+                      // 传完就能直接看：接收方看收到的文件，发送方看源文件。
+                      if (_canPreview) ...[
+                        const SizedBox(height: 6),
+                        _PreviewButton(path: task.localPath!),
+                      ],
+                    ],
                   ),
               ],
             ),
@@ -125,6 +182,21 @@ class TransferCard extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// 只有传完且手里有实际路径时才提供预览。
+  bool get _canPreview {
+    if (task.status != TransferStatus.completed) return false;
+    final path = task.localPath;
+    return path != null && path.isNotEmpty;
+  }
+
+  /// 剩余时间文案；传输刚开始还没采到速度样本时给出中性提示。
+  String _etaText(TransferTask task) {
+    if (task.status != TransferStatus.transferring) return '';
+    final eta = task.etaSeconds;
+    if (eta == null) return '正在估算剩余时间…';
+    return formatEta(eta);
   }
 
   String _finishedText(TransferTask task) {
@@ -139,6 +211,87 @@ class TransferCard extends StatelessWidget {
       TransferStatus.failed => '$size · 失败：${task.error ?? '未知错误'}',
       _ => size,
     };
+  }
+}
+
+/// 「复制错误信息」：把完整的系统报错放到剪贴板，便于检索或反馈。
+class _CopyErrorButton extends StatelessWidget {
+  const _CopyErrorButton({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return PressableScale(
+      onTap: () async {
+        await Clipboard.setData(ClipboardData(text: message));
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('错误信息已复制'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+      },
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.copy_all_rounded,
+              size: 14, color: AppColors.textSecondary),
+          SizedBox(width: 4),
+          Text(
+            '复制错误信息',
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 「预览」：打开全屏预览层直接看刚传完的文件。
+class _PreviewButton extends StatelessWidget {
+  const _PreviewButton({required this.path});
+
+  final String path;
+
+  @override
+  Widget build(BuildContext context) {
+    final kind = previewKindOf(extensionOf(path));
+    // Office / SVG 这类渲染不了的格式也提供入口，
+    // 预览层内会给出「用系统默认应用打开」。
+    final label = kind == PreviewKind.external ? '打开' : '预览';
+
+    return PressableScale(
+      onTap: () => showFilePreview(context, path),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            kind == PreviewKind.external
+                ? Icons.open_in_new_rounded
+                : Icons.visibility_outlined,
+            size: 14,
+            color: AppColors.primary,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              color: AppColors.primary,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

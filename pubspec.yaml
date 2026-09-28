@@ -43,6 +43,13 @@ dependencies:
   path_provider: ^2.1.6
   path: ^1.9.1
   desktop_drop: ^0.8.0
+  # 文件预览：视频用 libmpv 引擎（macOS/Windows 通用，格式覆盖广），
+  # PDF 用 pdfium。版本必须成对，否则 pub 会解析到互不兼容的旧版。
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+  pdfx: ^2.11.0
+  window_manager: ^0.5.2
 
 dev_dependencies:
   flutter_test:

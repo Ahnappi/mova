@@ -37,10 +37,29 @@ class ChunkReceived extends TransferEvent {
 }
 
 /// 对端声明文件发送完毕。
+///
+/// [size] 为发送端实际写出的字节数（可能缺失：老版本对端不带这个字段），
+/// [checksum] 为内容的 CRC32（同样可缺失）。接收端据此核对落盘结果，
+/// 只有对上了才算「真的收到了」。
 class EndReceived extends TransferEvent {
-  EndReceived(this.fileId);
+  EndReceived(this.fileId, {this.size, this.checksum});
 
   final int fileId;
+  final int? size;
+  final int? checksum;
+}
+
+/// 接收端的收尾回执（对应协议里的 fileDone 帧）。
+///
+/// [ok] 为 true 表示对方已核对大小与校验值、并把文件改名存好；
+/// false 时 [reason] 说明原因（大小不符 / 校验失败 / 写盘出错）。
+/// 发送端必须收到 ok=true 才能把任务标记为「已完成」。
+class DoneReceived extends TransferEvent {
+  DoneReceived(this.fileId, {required this.ok, this.reason});
+
+  final int fileId;
+  final bool ok;
+  final String? reason;
 }
 
 /// 对端（或我方）取消传输。

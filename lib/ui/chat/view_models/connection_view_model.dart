@@ -8,6 +8,7 @@ import '../../../data/repositories/chat/chat_repository.dart';
 import '../../../data/repositories/discovery/discovery_repository.dart';
 import '../../../data/repositories/history/history_repository.dart';
 import '../../../data/services/network/network_info_service.dart';
+import '../../../data/services/system/system_settings_service.dart';
 import '../../../domain/models/chat/connection_status.dart';
 import '../../../domain/models/chat/local_info.dart';
 import '../../../domain/models/chat/peer.dart';
@@ -23,20 +24,30 @@ class ConnectionViewModel extends ChangeNotifier {
     required ChatRepository chatRepository,
     required NetworkInfoService networkInfoService,
     required HistoryRepository historyRepository,
+    required SystemSettingsService systemSettingsService,
   })  : _discoveryRepository = discoveryRepository,
         _chatRepository = chatRepository,
         _networkInfoService = networkInfoService,
-        _historyRepository = historyRepository;
+        _historyRepository = historyRepository,
+        _systemSettings = systemSettingsService;
 
   final DiscoveryRepository _discoveryRepository;
   final ChatRepository _chatRepository;
   final NetworkInfoService _networkInfoService;
   final HistoryRepository _historyRepository;
+  final SystemSettingsService _systemSettings;
 
   final Logger _log = Logger('ConnectionViewModel');
 
+  /// 需要弹出提示的事件（如「有人想连你，但你已连着别人」）。
+  Stream<String> get notices => _noticeController.stream;
+
+  final StreamController<String> _noticeController =
+      StreamController<String>.broadcast();
+
   StreamSubscription<ConnectionStatus>? _statusSub;
   StreamSubscription<List<Peer>>? _peersSub;
+  StreamSubscription<String>? _noticeSub;
 
   LocalInfo? _localInfo;
   List<Peer> _peers = const [];
@@ -61,6 +72,38 @@ class ConnectionViewModel extends ChangeNotifier {
 
   /// 最近一次错误（无错误时为 null）。
   String? get errorMessage => _errorMessage;
+
+  /// 最近一次错误是否属于「系统/网络权限被拒绝」。
+  ///
+  /// 局域网互传最容易被两类东西静默拦掉：
+  /// - macOS 15 起的「本地网络」隐私授权；
+  /// - Windows 防火墙拦截入站/出站连接。
+  /// 这两种情况在应用里怎么点都没用，只能去系统设置里放行。
+  bool get isPermissionError {
+    final message = _errorMessage?.toLowerCase() ?? '';
+    return message.contains('operation not permitted') ||
+        message.contains('permission denied') ||
+        message.contains('errno = 13') ||
+        message.contains('errno=13') ||
+        message.contains('errno = 1') ||
+        message.contains('errno=1') ||
+        message.contains('本地网络') ||
+        message.contains('access is denied');
+  }
+
+  /// 关掉错误提示。
+  void dismissError() {
+    _errorMessage = null;
+    notifyListeners();
+  }
+
+  /// 打开系统的网络/本地网络权限设置页。
+  Future<void> openNetworkSettings() =>
+      _systemSettings.openLocalNetworkSettings();
+
+  /// 打开系统防火墙设置页（Windows 上入站连接常被它拦住）。
+  Future<void> openFirewallSettings() =>
+      _systemSettings.openFirewallSettings();
 
   /// 是否已连接。
   bool get isConnected => _status == ConnectionStatus.connected;
@@ -95,6 +138,9 @@ class ConnectionViewModel extends ChangeNotifier {
       _peers = peers;
       notifyListeners();
     });
+
+    // 忙碌时被拒绝的入站连接：转给界面提示，让用户知道有人来连过。
+    _noticeSub = _chatRepository.notices.listen(_noticeController.add);
 
     _localInfo = await _networkInfoService.getLocalInfo(tcpPort: AppConfig.tcpPort);
     _chatRepository.localName = _localInfo!.name;
@@ -147,6 +193,14 @@ class ConnectionViewModel extends ChangeNotifier {
 
   /// 按 IP 手动连接，[port] 缺省用 [AppConfig.tcpPort]。
   Future<void> connect(String host, {int? port}) async {
+    // 退出流程已经封存连接层：这时候再建会话，收尾中的传输与历史仓储
+    // 都接不住它。界面直接给结论，不必等底层报错。
+    if (_chatRepository.sealed) {
+      _errorMessage = '应用正在退出，无法再建立连接';
+      notifyListeners();
+      return;
+    }
+
     _errorMessage = null;
     notifyListeners();
 
@@ -207,6 +261,8 @@ class ConnectionViewModel extends ChangeNotifier {
     }
     _statusSub?.cancel();
     _peersSub?.cancel();
+    _noticeSub?.cancel();
+    _noticeController.close();
     super.dispose();
   }
 }

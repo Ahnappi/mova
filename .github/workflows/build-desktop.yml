@@ -44,8 +44,43 @@ env:
   MAC_ASSET: mova_mac_arm64
 
 jobs:
+  # ---------------- 测试（先跑，失败就不再打包） ----------------
+  # 单独一个 job：协议/超时/断连/会话切换这几组用例跑的是真实 loopback TCP，
+  # 放在 Linux 上最快也最稳；失败即阻断后续两个打包任务。
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 定位 Flutter 工程目录
+        id: locate
+        run: |
+          if [ -f "pubspec.yaml" ]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          else
+            found=$(find . -maxdepth 4 -name pubspec.yaml -not -path "*/build/*" | head -n 1)
+            echo "dir=$(dirname "$found")" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          channel: stable
+          cache: true
+
+      - name: 拉取依赖
+        run: flutter pub get
+        working-directory: ${{ steps.locate.outputs.dir }}
+
+      - name: 运行测试
+        run: flutter test
+        working-directory: ${{ steps.locate.outputs.dir }}
+
   # ---------------- Windows ----------------
   build-windows:
+    needs: verify
     runs-on: windows-latest
     defaults:
       run:
@@ -112,6 +147,7 @@ jobs:
   # ---------------- macOS ----------------
   build-macos:
     runs-on: macos-latest
+    needs: verify
 
     steps:
       - uses: actions/checkout@v4

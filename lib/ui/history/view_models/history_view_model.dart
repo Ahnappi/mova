@@ -1,10 +1,10 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
 import '../../../data/repositories/history/history_repository.dart';
 import '../../../data/services/storage/storage_service.dart';
+import '../../../data/services/transfer/file_storage_service.dart';
 import '../../../domain/models/history/session_record.dart';
 
 /// 连接记录视图模型（ViewModel 层）：查看 / 选择 / 删除历史会话。
@@ -12,8 +12,10 @@ class HistoryViewModel extends ChangeNotifier {
   HistoryViewModel({
     required HistoryRepository historyRepository,
     required StorageService storageService,
+    required FileStorageService fileStorageService,
   })  : _historyRepository = historyRepository,
-        _storageService = storageService {
+        _storageService = storageService,
+        _fileStorageService = fileStorageService {
     // 先用仓库的当前快照打底：本 ViewModel 可能被重建（面板重新挂载），
     // 而仓库只在首次加载时推送一次，重建后就再也收不到那次推送了。
     _sessions = _historyRepository.currentSessions;
@@ -40,6 +42,7 @@ class HistoryViewModel extends ChangeNotifier {
 
   final HistoryRepository _historyRepository;
   final StorageService _storageService;
+  final FileStorageService _fileStorageService;
 
   StreamSubscription<List<SessionRecord>>? _subscription;
 
@@ -105,7 +108,7 @@ class HistoryViewModel extends ChangeNotifier {
     for (final file in session.files) {
       final path = file.localPath;
       if (path == null || path.isEmpty) continue;
-      final exists = await File(path).exists();
+      final exists = _fileStorageService.inspect(path).exists;
       if (_pathExists[path] == exists) continue;
       _pathExists[path] = exists;
       if (hasListeners) notifyListeners();
