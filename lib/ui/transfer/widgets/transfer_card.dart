@@ -223,6 +223,13 @@ class TransferCard extends StatelessWidget {
   }
 
   /// 剩余时间文案；传输刚开始还没采到速度样本时给出中性提示。
+  /// 对方拒绝时带过来的原因（老版本对端不带，那就只说「已拒绝」）。
+  String _rejectReason(TransferTask task) {
+    final reason = task.error;
+    if (reason == null || reason.isEmpty) return '';
+    return '：$reason';
+  }
+
   String _etaText(TransferTask task) {
     if (task.status != TransferStatus.transferring) return '';
     final eta = task.etaSeconds;
@@ -237,7 +244,13 @@ class TransferCard extends StatelessWidget {
     return switch (task.status) {
       TransferStatus.completed =>
         '$size · ${_isSending ? '已送达' : '已保存'}${path == null || path.isEmpty ? '' : '至 $path'}',
-      TransferStatus.rejected => '$size · 对方已拒绝',
+      // 拒绝有**两个方向**，文案必须分开：自己拒的显示成「对方已拒绝」，
+      // 会让用户以为是对方不要这个文件（其实是他自己点的拒绝）。
+      // 判断依据是方向：reject 帧只有接收方才发得出去，
+      // 所以 receiving + rejected 一定是自己拒的。
+      TransferStatus.rejected => _isSending
+          ? '$size · 对方已拒绝${_rejectReason(task)}'
+          : '$size · 已拒绝接收',
       TransferStatus.canceled => '$size · 已取消',
       TransferStatus.failed => '$size · 失败：${task.error ?? '未知错误'}',
       _ => size,

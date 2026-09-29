@@ -92,17 +92,13 @@ class SettingsDialog extends StatelessWidget {
                 ],
               ),
             ),
+            // 保存结果提示**放在弹窗里**，而不是丢给 SnackBar：
+            // SnackBar 跑在页面底部的 Scaffold 上，隔着一层遮罩，
+            // 弹窗开着时很容易看不见——表现就是「点了保存，什么也没发生」。
             if (vm.errorMessage != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
-                child: Text(
-                  vm.errorMessage!,
-                  style: const TextStyle(
-                    color: AppColors.danger,
-                    fontSize: 12,
-                  ),
-                ),
-              ),
+              _InlineNotice(text: vm.errorMessage!, error: true)
+            else if (vm.lastMessage != null)
+              _InlineNotice(text: vm.lastMessage!),
             const Divider(height: 1),
             Expanded(
               child: vm.isLoading
@@ -123,6 +119,47 @@ class SettingsDialog extends StatelessWidget {
                         const SizedBox(height: 8),
                       ],
                     ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 弹窗内的结果提示条（保存成功 / 失败都走这里）。
+class _InlineNotice extends StatelessWidget {
+  const _InlineNotice({required this.text, this.error = false});
+
+  final String text;
+  final bool error;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = error ? AppColors.danger : AppColors.success;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              error ? Icons.error_outline_rounded : Icons.check_circle_outline,
+              size: 15,
+              color: color,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                text,
+                style: TextStyle(color: color, fontSize: 12.5),
+              ),
             ),
           ],
         ),
@@ -164,16 +201,9 @@ class _DeviceNameSectionState extends State<_DeviceNameSection> {
     if (!mounted) return;
     // 存的是「用户填了什么」，界面把它再显示一遍（空则退回主机名）。
     _controller.text = vm.deviceNameForInput;
-    _showSnack(vm.lastMessage ?? '设备名已保存');
-    vm.clearMessage();
-  }
-
-  void _showSnack(String text) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(content: Text(text), duration: const Duration(seconds: 2)),
-      );
+    // 保存成功与否都由弹窗里的提示条给出（失败时 vm.errorMessage 非空，
+    // 提示条会自动变成红色）——这里不再自己拼一句「已保存」，
+    // 否则保存失败也会被说成成功。
   }
 
   @override
@@ -273,21 +303,7 @@ class _RetentionSection extends StatelessWidget {
               _RetentionChip(
                 label: retentionLabel(days),
                 selected: vm.retentionDays == days,
-                onTap: () async {
-                  await vm.setRetentionDays(days);
-                  if (!context.mounted) return;
-                  final message = vm.lastMessage;
-                  if (message == null) return;
-                  vm.clearMessage();
-                  ScaffoldMessenger.of(context)
-                    ..hideCurrentSnackBar()
-                    ..showSnackBar(
-                      SnackBar(
-                        content: Text(message),
-                        duration: const Duration(seconds: 2),
-                      ),
-                    );
-                },
+                onTap: () => vm.setRetentionDays(days),
               ),
           ],
         ),

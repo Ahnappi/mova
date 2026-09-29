@@ -68,6 +68,24 @@ dev_dependencies:
 # The following section is specific to Flutter packages.
 flutter:
 
+  config:
+    # 项目级关闭 Swift Package Manager（对 macOS 与 iOS 同时生效）。
+    #
+    # 原因：视频预览用的 media_kit_video 与 media_kit_libs_macos_video
+    # 还没支持 SwiftPM——上游 main 分支已在 2026-05 合入 Package.swift，
+    # 但 pub.dev 上的最新版（2.0.1 / 1.1.4，2025-12 发布）仍没有，
+    # 也没有预发布版本。开着 SwiftPM 时每次 flutter run 都会打印告警，
+    # 按官方说法「未来会变成错误」。
+    #
+    # 关掉后所有依赖统一走 CocoaPods：既消除了告警，也避免
+    # 「一部分依赖 SwiftPM、一部分依赖 CocoaPods」的混合状态。
+    # Podfile 里那条 mpv 的兜底（SWIFT_ENABLE_EXPLICIT_MODULES = NO）
+    # 会继续生效，这正好是现在需要的。
+    #
+    # TODO: 等 media_kit 发布带 SwiftPM 支持的新版本后，删掉这一段，
+    # 重新 flutter pub get 迁回 SwiftPM。
+    enable-swift-package-manager: false
+
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in
   # the material Icons class.

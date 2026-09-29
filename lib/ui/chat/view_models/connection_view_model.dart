@@ -93,14 +93,18 @@ class ConnectionViewModel extends ChangeNotifier {
   /// 因此正在搜索时先停再开，让下一个心跳（最多 3 秒）就带上新名字；
   /// 已经建立的连接不会改（hello 帧只在建连时发一次），
   /// 下次连接才会看到新名字。
-  Future<void> applyDeviceName(String name) async {
+  ///
+  /// 返回**这次改名是否已经推给局域网**：正在搜索（即在广播）才算 true，
+  /// 调用方据此告诉用户「对方马上能看到」还是「要再点一次搜索」——
+  /// 没广播时说「已生效」，用户跑到另一台电脑上却找不到，最难排查。
+  Future<bool> applyDeviceName(String name) async {
     final trimmed = name.trim();
     final info = _localInfo;
 
     if (info == null) {
       // 本机信息还没算出来（设置页比初始化更早打开）：先记着，初始化时套用。
       _pendingDeviceName = trimmed.isEmpty ? null : trimmed;
-      return;
+      return false;
     }
 
     _pendingDeviceName = trimmed.isEmpty ? null : trimmed;
@@ -111,7 +115,10 @@ class ConnectionViewModel extends ChangeNotifier {
     _chatRepository.localName = updated.name;
     notifyListeners();
 
-    if (!_discovering) return;
+    // 没在搜索就没有在广播：名字本地已经改好了，
+    // 但局域网里没人听得到，下次点「搜索设备」才会带着新名字出去。
+    if (!_discovering) return false;
+
     await _discoveryRepository.stop();
     final result = await _discoveryRepository.start(updated);
     if (result is Error<void>) {
@@ -119,6 +126,7 @@ class ConnectionViewModel extends ChangeNotifier {
       _log.warning('改名后重启搜索失败：${result.error}');
     }
     notifyListeners();
+    return true;
   }
 
   /// 本机信息（初始化前为 null）。

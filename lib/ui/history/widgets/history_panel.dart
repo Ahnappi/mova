@@ -464,7 +464,7 @@ class _HistoryFileCard extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Text(
-                _statusText(file.status),
+                _statusText(file),
                 style: TextStyle(
                   color: _statusColor(file.status),
                   fontSize: 12,
@@ -572,9 +572,15 @@ class _HistoryFileCard extends StatelessWidget {
     return Icons.description_outlined;
   }
 
-  String _statusText(SessionFileStatus status) => switch (status) {
+  /// 状态文案。
+  ///
+  /// 「拒绝」按方向分开写：只有我们自己发出去的文件才可能是「对方拒绝」，
+  /// 对方发来被我们拒掉的，写成「对方拒绝」就把因果说反了。
+  String _statusText(SessionFile file) => switch (file.status) {
         SessionFileStatus.completed => '完成',
-        SessionFileStatus.rejected => '对方拒绝',
+        SessionFileStatus.rejected => file.direction == SessionFileDirection.sent
+            ? '对方拒绝'
+            : '已拒绝接收',
         SessionFileStatus.canceled => '已取消',
         SessionFileStatus.failed => '失败',
         SessionFileStatus.pending => '未完成',

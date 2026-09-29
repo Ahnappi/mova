@@ -33,7 +33,11 @@ enum TransferStatus {
   /// 已完成（双方一致确认）。
   completed,
 
-  /// 对方拒绝。
+  /// 已拒绝。
+  ///
+  /// 注意它同时表示两种相反的情形，界面必须按 [TransferTask.direction]
+  /// 区分：接收方拒绝是自己拒的，发送方收到 reject 帧才是「对方已拒绝」
+  /// （reject 帧只有接收方发得出去）。
   rejected,
 
   /// 已取消。

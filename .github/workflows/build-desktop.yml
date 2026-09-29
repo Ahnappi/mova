@@ -12,7 +12,7 @@
 # ---------------------------------------------------------------------------
 # 关于「压缩包套压缩包」（重要）
 #
-# upload-artifact@v4 会把上传内容**强制再打一层 zip**，且没有关闭选项。
+# upload-artifact@v6 会把上传内容**强制再打一层 zip**，且没有关闭选项。
 # 因此：上传一个 .zip -> 下载得到 zip(zip(...))。要避免嵌套，就必须上传「目录」
 # 或「非压缩包文件」，让 artifact 自己生成的那层 zip 成为唯一的一层。
 #
@@ -26,6 +26,22 @@
 #   - Artifacts（Actions 页面下载）：Windows 单层；macOS 是 zip(tar.gz)，
 #     解压后得到 mova_mac_arm64.tar.gz，再解压出 mova.app（这是 GitHub 限制所致）。
 #   - Release 资源（打 tag 才有）：两边都是**干净的单层 zip**，推荐从这里下载。
+# ---------------------------------------------------------------------------
+# 关于 action 版本（别改回去）
+#
+# 2025-09 起 GitHub Actions 停用 Node 20 运行时，仍在 node20 上的 action 会被
+# 强行拖到 Node 24 并打出弃用警告（将来会直接失败）。因此这里统一用已经迁移
+# 到 node24 的大版本：
+#
+#   actions/checkout          v4 -> v6     （v6 起 node24）
+#   actions/upload-artifact   v4 -> v6     （v6 起 node24；v5 仍是 node20，不够）
+#   softprops/action-gh-release v2 -> v3   （v3 = node24，官方说明只是换运行时）
+#
+# 这三处升级都不改变本流程用到的输入项（name / path / files），产物结构不变。
+# 若改用自托管 runner，需要 Actions Runner >= 2.327.1 才支持 node24。
+#
+# 注：subosito/flutter-action 是 composite action（内部是 shell 步骤），
+# 不受 Node 运行时弃用影响，保持 v2 即可。
 # ---------------------------------------------------------------------------
 
 name: Build Desktop
@@ -51,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: 定位 Flutter 工程目录
         id: locate
@@ -87,7 +103,7 @@ jobs:
         shell: pwsh
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # 自动定位 Flutter 工程目录：仓库根就是工程，或工程在子目录都能用。
       - name: 定位 Flutter 工程目录
@@ -133,14 +149,16 @@ jobs:
 
       # 直接上传目录 -> artifact 的 zip 就是唯一一层，解压即用，不再套娃。
       - name: 上传产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.WIN_ASSET }}
           path: ${{ steps.locate.outputs.dir }}/build/windows/x64/runner/Release
 
       - name: 发布到 GitHub Releases
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: ${{ steps.locate.outputs.dir }}/dist/${{ env.WIN_ASSET }}.zip
 
@@ -150,7 +168,7 @@ jobs:
     needs: verify
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: 定位 Flutter 工程目录
         id: locate
@@ -193,14 +211,16 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/$MAC_ASSET.zip"
 
       - name: 上传产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.MAC_ASSET }}
           path: ${{ steps.locate.outputs.dir }}/dist/${{ env.MAC_ASSET }}.tar.gz
 
       - name: 发布到 GitHub Releases
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: ${{ steps.locate.outputs.dir }}/dist/${{ env.MAC_ASSET }}.zip
 

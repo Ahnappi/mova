@@ -195,16 +195,14 @@ List<SingleChildWidget> buildProviders({
     ),
 
     // ViewModel 层
-    ChangeNotifierProvider(
-      create: (context) => SettingsViewModel(
-        settingsRepository: context.read(),
-        historyRepository: context.read(),
-        networkInfoService: context.read(),
-        // 改名要立刻反映到下一拍 UDP 心跳上，否则对方要等到重启才看得到。
-        onDeviceNameChanged: (name) =>
-            context.read<ConnectionViewModel>().applyDeviceName(name),
-      )..load(),
-    ),
+    //
+    // 顺序是有讲究的：**ConnectionViewModel 必须排在 SettingsViewModel 前面**。
+    // `context.read` 只能向上找到**祖先**节点，而 MultiProvider 是把这些
+    // provider 依次嵌套起来的——写在前面的在外层。SettingsViewModel 的
+    // 「改名回调」要拿到 ConnectionViewModel 去重启广播，若它被注册在
+    // 内层，回调触发时会直接抛 ProviderNotFoundException：
+    // 设置其实已经存好了，但广播没重启（另一台设备看不到新名字），
+    // 异常又正好打断了后面的提示，界面上一点反馈都没有。
     ChangeNotifierProvider(
       create: (context) => ConnectionViewModel(
         discoveryRepository: context.read(),
@@ -214,6 +212,16 @@ List<SingleChildWidget> buildProviders({
         systemSettingsService: context.read(),
         settingsRepository: context.read(),
       ),
+    ),
+    ChangeNotifierProvider(
+      create: (context) => SettingsViewModel(
+        settingsRepository: context.read(),
+        historyRepository: context.read(),
+        networkInfoService: context.read(),
+        // 改名要立刻反映到下一拍 UDP 心跳上，否则对方要等到重启才看得到。
+        onDeviceNameChanged: (name) =>
+            context.read<ConnectionViewModel>().applyDeviceName(name),
+      )..load(),
     ),
     ChangeNotifierProvider(
       create: (context) => ChatViewModel(
