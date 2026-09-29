@@ -15,7 +15,7 @@ class NetworkInfoService {
     final ip = await findLanIp();
     return LocalInfo(
       id: _generateId(),
-      name: _deviceName(),
+      name: defaultDeviceName(),
       ip: ip ?? '未知',
       tcpPort: tcpPort,
       platform: Platform.operatingSystem,
@@ -112,8 +112,11 @@ class NetworkInfoService {
     return a == 100 && b >= 64 && b <= 127;
   }
 
-  /// 设备名：取主机名并去掉 `.local` 后缀。
-  String _deviceName() {
+  /// 默认设备名：主机名去掉 `.local` 后缀。
+  ///
+  /// 用户在设置里改过名之后就用自定义名；这里提供「没改过」时的兜底值，
+  /// 设置界面也靠它显示输入框的提示文字。
+  String defaultDeviceName() {
     final host = Platform.localHostname;
     final name = host.replaceAll(RegExp(r'\.local$'), '');
     return name.isEmpty ? 'Mova 设备' : name;

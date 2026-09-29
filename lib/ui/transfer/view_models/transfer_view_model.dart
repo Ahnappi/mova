@@ -121,6 +121,9 @@ class TransferViewModel extends ChangeNotifier {
   /// 接收文件的保存目录。
   String? get saveDirectory => _saveDirectory;
 
+  /// 支持的文件类型概览（界面提示用，避免罗列上百个扩展名）。
+  String get allowedText => AppConfig.allowedSummary;
+
   /// 最近一次操作反馈；读取后调用 [clearMessage] 避免重复提示。
   String? get lastMessage => _lastMessage;
 
@@ -176,59 +179,72 @@ class TransferViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 选择文件并发送（受 AppConfig.allowedFileExtensions 限制）。
-  Future<void> pickAndSendFiles() async {
+  /// 选择文件前确认（受 AppConfig.allowedFileExtensions 限制）。
+  ///
+  /// 注意这里**不发送**：发送前要不要再问一句由上层决定
+  /// （见 [sendFiles] 与「发送前确认」设置）。拆开之后，
+  /// 「选文件的校验」与「真的把文件交出去」这两件事可以分别验证。
+  Future<({List<PickedFile> accepted, List<String> ignored})>
+      pickFiles() async {
     _errorMessage = null;
     notifyListeners();
-
-    final picked = await _transferRepository.pickFilesToSend();
-    if (picked.accepted.isEmpty) {
-      if (picked.ignored.isNotEmpty) {
-        _lastMessage = '这些文件暂不支持（仅支持 $_allowedText）';
-        notifyListeners();
-      }
-      return;
-    }
-
-    await _send(picked.accepted);
-    _reportResult(picked.accepted.length, picked.ignored.length);
+    return _transferRepository.pickFilesToSend();
   }
 
-  /// 发送拖拽进来的文件路径；不支持的类型会被忽略并给出提示。
-  Future<void> sendPaths(List<String> paths) async {
+  /// 把拖拽进来的路径转成可发送的文件；不支持的类型会被忽略。
+  Future<({List<PickedFile> accepted, List<String> ignored})> filesFromPaths(
+    List<String> paths,
+  ) async {
     _errorMessage = null;
     notifyListeners();
-
-    final parsed = await _transferRepository.filesFromPaths(paths);
-    if (parsed.accepted.isEmpty) {
-      _lastMessage = paths.isEmpty
-          ? '没有识别到文件'
-          : '这些文件暂不支持（仅支持 $_allowedText）';
-      notifyListeners();
-      return;
-    }
-
-    await _send(parsed.accepted);
-    _reportResult(parsed.accepted.length, parsed.ignored.length);
+    return _transferRepository.filesFromPaths(paths);
   }
 
-  /// 统一给出「发起了几个、忽略了几个」的一次性提示。
-  void _reportResult(int acceptedCount, int ignoredCount) {
-    final ignoredHint =
-        ignoredCount == 0 ? '' : '，已忽略 $ignoredCount 个不支持的项';
-    _lastMessage = '已发起 $acceptedCount 个文件$ignoredHint';
-    notifyListeners();
-  }
+  /// 真的把文件交出去。
+  Future<void> sendFiles(List<PickedFile> files) async {
+    if (files.isEmpty) return;
 
-  String get _allowedText => AppConfig.allowedSummary;
-
-  Future<void> _send(List<PickedFile> files) async {
     final result = await _transferRepository.sendFiles(files);
     if (result is Error<void>) {
       _errorMessage = result.error.toString();
       _log.warning('发起发送失败：${result.error}');
       notifyListeners();
     }
+  }
+
+  /// 统一给出「发起了几个、忽略了几个」的一次性提示。
+  void reportResult(int acceptedCount, int ignoredCount) {
+    final ignoredHint =
+        ignoredCount == 0 ? '' : '，已忽略 $ignoredCount 个不支持的项';
+    _lastMessage = '已发起 $acceptedCount 个文件$ignoredHint';
+    notifyListeners();
+  }
+
+  /// 重新发送一个失败的文件。
+  ///
+  /// 失败原因往往是一行很长的系统错误，先把它从错误条里收掉——
+  /// 重发的任务已经有自己的卡片和进度条，不需要再挂一条过期的报错。
+  Future<void> retry(int fileId) async {
+    final message = _errorMessage;
+    if (message != null) _dismissedErrors.add(message);
+    _errorMessage = null;
+    notifyListeners();
+
+    final task = taskById(fileId);
+    final name = task?.fileName;
+
+    final result = await _transferRepository.retry(fileId);
+    if (result is Error<int>) {
+      _errorMessage = result.error.toString();
+      _log.warning('重新发送失败：${result.error}');
+      notifyListeners();
+      return;
+    }
+
+    // 旧任务已经不存在了，别再拿它的状态去重放历史。
+    _recordedStatus.remove(fileId);
+    _lastMessage = name == null ? '已重新发送' : '已重新发送「$name」';
+    notifyListeners();
   }
 
   /// 同意接收；[saveDirectory] 为空时落到当前保存目录。

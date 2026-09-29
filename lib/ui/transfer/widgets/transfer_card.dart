@@ -23,6 +23,7 @@ class TransferCard extends StatelessWidget {
     required this.onSaveAs,
     required this.onReject,
     required this.onCancel,
+    required this.onRetry,
   });
 
   final TransferTask task;
@@ -31,15 +32,30 @@ class TransferCard extends StatelessWidget {
   final VoidCallback onReject;
   final VoidCallback onCancel;
 
+  /// 重新发送（只有发送失败时才在卡片上出现）。
+  final VoidCallback onRetry;
+
   /// 发送方靠右、接收方靠左（与消息气泡同向，方便区分）。
   bool get _isSending => task.direction == TransferDirection.sending;
+
+  /// 能否重新发送：只有「自己发出去、并且失败了」的文件才可能重发。
+  ///
+  /// 接收失败时文件在对方手里，我们重发无从谈起——
+  /// 给它一个按钮只会让人白点一次。
+  bool get _canRetry =>
+      task.status == TransferStatus.failed && _isSending;
 
   @override
   Widget build(BuildContext context) {
     return Align(
       alignment: _isSending ? Alignment.centerRight : Alignment.centerLeft,
       child: task.status == TransferStatus.waiting && _isOffer
-          ? _OfferCard(task: task, onAccept: onAccept, onSaveAs: onSaveAs, onReject: onReject)
+          ? _OfferCard(
+              task: task,
+              onAccept: onAccept,
+              onSaveAs: onSaveAs,
+              onReject: onReject,
+            )
           : _buildStateCard(context),
     );
   }
@@ -162,6 +178,21 @@ class TransferCard extends StatelessWidget {
                           fontSize: 12,
                         ),
                       ),
+                      // 接收失败时文件在对方手里，这里没有可重发的东西，
+                      // 明确说出来比给一个点不动的按钮强。
+                      if (_canRetry) ...[
+                        const SizedBox(height: 8),
+                        _RetryButton(onRetry: onRetry),
+                      ] else if (task.status == TransferStatus.failed) ...[
+                        const SizedBox(height: 6),
+                        const Text(
+                          '这是对方发来的文件，需要对方重新发送',
+                          style: TextStyle(
+                            color: AppColors.textSecondary,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                       // 失败原因常常是一长串系统错误，界面上放不下，
                       // 给一个复制入口方便直接拿去查。
                       if (task.status == TransferStatus.failed &&
@@ -290,6 +321,42 @@ class _PreviewButton extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 「重新发送」：失败的任务不用回到文件选择器再来一遍。
+class _RetryButton extends StatelessWidget {
+  const _RetryButton({required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return PressableScale(
+      onTap: onRetry,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+        decoration: BoxDecoration(
+          border: Border.all(color: AppColors.primary.withValues(alpha: 0.5)),
+          borderRadius: BorderRadius.circular(AppDimens.radiusPill),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.refresh_rounded, size: 14, color: AppColors.primary),
+            SizedBox(width: 6),
+            Text(
+              '重新发送',
+              style: TextStyle(
+                color: AppColors.primary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

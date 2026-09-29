@@ -4,6 +4,8 @@ import 'package:logging/logging.dart';
 
 import '../../../config/app_config.dart';
 import '../../../domain/models/history/session_record.dart';
+import '../../../domain/models/settings/app_settings.dart';
+import '../../repositories/settings/settings_repository.dart';
 import '../../services/history/history_storage_service.dart';
 import 'history_repository.dart';
 
@@ -26,9 +28,15 @@ import 'history_repository.dart';
 /// 限制，单文件通常只有几百 KB。若日后记录量明显增长（数万条以上），
 /// 应换成追加式日志或 SQLite，而不是继续放大这个文件。
 class HistoryRepositoryLocal implements HistoryRepository {
-  HistoryRepositoryLocal(this._storage);
+  /// [settingsRepository] 提供「连接记录保留多久」这项用户设置。
+  ///
+  /// 不传时**不做时间维度的清理**（只有条数上限在起作用）：
+  /// 既有的单元测试大多只关心写盘可靠性，不该被强制带上一项偏好设置。
+  HistoryRepositoryLocal(this._storage, {SettingsRepository? settingsRepository})
+      : _settings = settingsRepository;
 
   final HistoryStorageService _storage;
+  final SettingsRepository? _settings;
   final Logger _log = Logger('HistoryRepositoryLocal');
 
   final StreamController<List<SessionRecord>> _controller =
@@ -106,6 +114,8 @@ class HistoryRepositoryLocal implements HistoryRepository {
 
   Future<void> _readFromDisk() async {
     _sessions = await _storage.readAll();
+    // 启动时就先筛一遍：过期的记录不必再参与后续的读写与展示。
+    await _pruneExpired();
     _emit();
   }
 
@@ -150,6 +160,66 @@ class HistoryRepositoryLocal implements HistoryRepository {
       if (session.isActive) kept.add(session);
     }
     _sessions = kept;
+  }
+
+  @override
+  Future<int> applyRetention() async {
+    await _ensureLoaded();
+    return _pruneExpired();
+  }
+
+  /// 按用户在设置里选的保留期限淘汰过期记录，返回被清掉的条数。
+  ///
+  /// 三个边界：
+  /// - **永久保留**（期限 ≤ 0）不做清理，只保留条数上限那条约束；
+  /// - **当前会话永远不清理**：它还在被写入，删掉会让消息与文件没地方落；
+  /// - 判断时间点用 `endedAt ?? startedAt`：会话正常结束时按结束时间算，
+  ///   崩溃退出留下的「没结束」记录则按开始时间算，不会永远赖着不走。
+  ///
+  /// 注入了设置仓储才会生效（不注入时不清理，便于只用内存写盘的测试）。
+  Future<int> _pruneExpired() async {
+    final settings = _settings;
+    if (settings == null || _sessions.isEmpty) return 0;
+
+    final AppSettings prefs;
+    try {
+      prefs = await settings.load();
+    } catch (e) {
+      // 读不到期限就当「本次不清理」：误删历史是不可逆的，
+      // 宁可多留一会儿，也不能因为一次读取失败把记录清掉。
+      _log.warning('读取连接记录保留期限失败，本次不做清理：$e');
+      return 0;
+    }
+
+    final retention = prefs.retentionDuration;
+    if (retention == null) return 0; // 永久保留
+
+    final cutoff = DateTime.now().subtract(retention);
+    final active = _activeSessionId;
+    final kept = <SessionRecord>[];
+    var removed = 0;
+
+    for (final session in _sessions) {
+      if (session.id == active) {
+        kept.add(session);
+        continue;
+      }
+      final at = session.endedAt ?? session.startedAt;
+      if (at.isBefore(cutoff)) {
+        removed++;
+        continue;
+      }
+      kept.add(session);
+    }
+
+    if (removed == 0) return 0;
+
+    _sessions = kept;
+    _markDirty();
+    _emit();
+    _schedulePersist();
+    _log.info('按保留期限清理了 $removed 条连接记录');
+    return removed;
   }
 
   @override

@@ -27,4 +27,13 @@ class LocalInfo {
 
   /// 展示用的「地址:端口」，如 `192.168.1.5:49153`。
   String get endpoint => '$ip:$tcpPort';
+
+  /// 换一个设备名（用户在设置里改名时用），其余字段保持不变。
+  LocalInfo copyWith({String? name, String? ip, int? tcpPort}) => LocalInfo(
+        id: id,
+        name: name ?? this.name,
+        ip: ip ?? this.ip,
+        tcpPort: tcpPort ?? this.tcpPort,
+        platform: platform,
+      );
 }

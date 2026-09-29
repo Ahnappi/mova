@@ -351,6 +351,28 @@ class AppConfig {
   /// 若日后确实需要长期保存全部记录，应改用追加式日志或本地数据库。
   static const int maxHistorySessions = 200;
 
+  // ---------- 偏好设置 ----------
+
+  /// 自定义设备名的长度上限。
+  ///
+  /// 这个名字会随每次 UDP 心跳广播出去（一个包里几十个字节），
+  /// 太长既没必要也会让广播包变大。
+  static const int maxDeviceNameLength = 32;
+
+  /// 连接记录的默认保留天数。
+  static const int defaultHistoryRetentionDays = 30;
+
+  /// 界面上可选的保留期限（天数）。
+  ///
+  /// `0` 表示**永久保留**——此时不做时间维度的清理，
+  /// 只保留「条数上限」这一条约束（见 [maxHistorySessions]）。
+  static const List<int> historyRetentionOptions = <int>[1, 7, 30, 90, 365, 0];
+
+  /// 发送文件前是否先弹窗确认（默认开）。
+  ///
+  /// 拖文件进窗口太容易手滑了：确认这一步是唯一的刹车。
+  static const bool defaultConfirmBeforeSend = true;
+
   /// 单个日志文件的大小上限，超过后轮转为 `mova.log.1`，避免日志无限增长。
   static const int maxLogFileBytes = 2 * 1024 * 1024;
 }

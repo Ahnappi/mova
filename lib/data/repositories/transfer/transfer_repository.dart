@@ -15,6 +15,12 @@ abstract class TransferRepository {
   /// 发送一组文件（内部串行发送，一次只向对端提一个请求）。
   Future<Result<void>> sendFiles(List<PickedFile> files);
 
+  /// 重新发送一个失败的文件任务，返回新任务的 id。
+  ///
+  /// 只有「自己发出去、并且失败了」的任务能重发：接收失败是对方那边
+  /// 的问题，我们手里没有那份文件，重发无从谈起。
+  Future<Result<int>> retry(int fileId);
+
   // ---------- 文件选取与保存位置 ----------
   //
   // 这几项本质是「要发给谁 / 存到哪」的业务规则的一部分，

@@ -113,6 +113,7 @@ class _TransferSlot extends StatelessWidget {
           onSaveAs: () => vm.acceptWithDirectoryPicker(current.id),
           onReject: () => vm.reject(current.id),
           onCancel: () => vm.cancel(current.id),
+          onRetry: () => vm.retry(current.id),
         );
       },
     );

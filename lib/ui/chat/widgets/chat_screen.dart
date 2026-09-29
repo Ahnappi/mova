@@ -2,10 +2,14 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../domain/models/transfer/picked_file.dart';
 import '../../history/widgets/history_panel.dart';
+import '../../settings/view_models/settings_view_model.dart';
+import '../../settings/widgets/settings_dialog.dart';
 import '../../storage/widgets/storage_paths_dialog.dart';
 import '../../theme/app_theme.dart';
 import '../../transfer/view_models/transfer_view_model.dart';
+import '../../transfer/widgets/send_confirm_dialog.dart';
 import '../view_models/chat_view_model.dart';
 import '../view_models/connection_view_model.dart';
 import 'chat_header.dart';
@@ -71,6 +75,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final chat = context.watch<ChatViewModel>();
     // 只在任务增删/顺序变化时重建列表，进度刷新交给卡片自己。
     context.select<TransferViewModel, String>((vm) => vm.taskSignature);
+    // 设置项（发文件前要不要确认）在发送那一步才读，不必订阅整个 ViewModel。
     final transfer = context.read<TransferViewModel>();
 
     final timeline = _buildTimeline(chat, transfer);
@@ -101,6 +106,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         connection: connection,
                         onOpenHistory: () => setState(() => _historyOpen = true),
                         onOpenStorage: () => showStoragePathsDialog(context),
+                        onOpenSettings: () => showSettingsDialog(context),
                       ),
                       ChatSubtitle(connection: connection),
                       if (!connection.isConnected) ...[
@@ -129,7 +135,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         messageController: _messageController,
                         enabled: connection.isConnected,
                         onSend: _send,
-                        onPickFiles: transfer.pickAndSendFiles,
+                        onPickFiles: _pickAndSendFiles,
                       ),
                     ],
                   ),
@@ -212,9 +218,68 @@ class _ChatScreenState extends State<ChatScreen> {
     final paths = items.map((item) => item.path).whereType<String>().toList();
     if (paths.isEmpty) return;
 
-    await transfer.sendPaths(paths);
+    final parsed = await transfer.filesFromPaths(paths);
     if (!mounted) return;
 
+    await _confirmAndSend(
+      transfer,
+      parsed.accepted,
+      ignoredCount: parsed.ignored.length,
+      // 拖拽本身就是「松手即发送」，没识别到任何文件时单独提示一次。
+      emptyHint: paths.isEmpty ? '没有识别到文件' : null,
+    );
+  }
+
+  // ---------- 发送文件（回形针 / 拖拽两条入口共用） ----------
+
+  /// 打开文件选择器，确认后发送。
+  Future<void> _pickAndSendFiles() async {
+    final transfer = context.read<TransferViewModel>();
+    final picked = await transfer.pickFiles();
+    if (!mounted) return;
+
+    await _confirmAndSend(
+      transfer,
+      picked.accepted,
+      ignoredCount: picked.ignored.length,
+    );
+  }
+
+  /// 统一的「先看一眼再发」流程。
+  ///
+  /// 两个入口（回形针、拖拽）都走这里：不小心选错文件、或者把文件拖错
+  /// 窗口，都是一次点击就收不回来的操作，而这两个入口原本都是
+  /// 「选完就发」。确认框可以在设置里关掉，给追求速度的人留一条捷径。
+  Future<void> _confirmAndSend(
+    TransferViewModel transfer,
+    List<PickedFile> files, {
+    required int ignoredCount,
+    String? emptyHint,
+  }) async {
+    if (files.isEmpty) {
+      if (emptyHint != null || ignoredCount > 0) {
+        _showMessage(
+          emptyHint ?? '这些文件暂不支持（仅支持 ${transfer.allowedText}）',
+        );
+      }
+      return;
+    }
+
+    final settings = context.read<SettingsViewModel>();
+    if (settings.confirmBeforeSend) {
+      final connection = context.read<ConnectionViewModel>();
+      final confirmed = await showSendConfirmDialog(
+        context,
+        files: files,
+        peerName: connection.remoteName ?? '对方',
+      );
+      if (!confirmed || !mounted) return;
+    }
+
+    await transfer.sendFiles(files);
+    if (!mounted) return;
+
+    transfer.reportResult(files.length, ignoredCount);
     final message = transfer.lastMessage;
     if (message != null) {
       transfer.clearMessage();

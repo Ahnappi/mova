@@ -28,6 +28,34 @@ class SettingsService {
     await _persist(map);
   }
 
+  /// 读整数；不存在或不是数字时返回 null（由调用方给默认值）。
+  Future<int?> readInt(String key) async {
+    final map = await _load();
+    final value = map[key];
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return null;
+  }
+
+  Future<void> writeInt(String key, int value) async {
+    final map = await _load();
+    map[key] = value;
+    await _persist(map);
+  }
+
+  /// 读布尔；不存在或不是布尔时返回 null（由调用方给默认值）。
+  Future<bool?> readBool(String key) async {
+    final map = await _load();
+    final value = map[key];
+    return value is bool ? value : null;
+  }
+
+  Future<void> writeBool(String key, bool value) async {
+    final map = await _load();
+    map[key] = value;
+    await _persist(map);
+  }
+
   Future<void> remove(String key) async {
     final map = await _load();
     map.remove(key);

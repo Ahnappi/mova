@@ -186,6 +186,10 @@ class _FakeTransferRepository implements TransferRepository {
   Future<Result<void>> sendFiles(List<PickedFile> files) async => Result.ok(null);
 
   @override
+  Future<Result<int>> retry(int fileId) async =>
+      Result.error(Exception('这个替身不做重发'));
+
+  @override
   Future<({List<PickedFile> accepted, List<String> ignored})>
       pickFilesToSend() async => (accepted: <PickedFile>[], ignored: <String>[]);
 

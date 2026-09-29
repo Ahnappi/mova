@@ -186,6 +186,81 @@ class TransferRepositoryLocal implements TransferRepository {
     return Result.ok(null);
   }
 
+  /// 重新发送一个**失败的文件发送任务**。
+  ///
+  /// 不是把同一个任务改回排队那么简单——那样会踩到几个坑：
+  /// - **任务 id 必须换新的**：id 是双端用来认这个词条的键，旧 id 上
+  ///   还可能残留对端正在处理的状态（它刚回了一个失败/取消帧也说不定），
+  ///   复用会让两条流程在同一 id 上互相覆盖；
+  /// - **源文件要重新看一眼**：失败到重发之间可能过了很久，
+  ///   文件可能已被移走，也可能被改过（大小变了）。
+  ///   重新 stat 拿到的大小才是对端会对账的那个值；
+  /// - **会话必须是同一条**：对方换了设备就要重新发，别把文件
+  ///   发给一个无关的人——这既是隐私问题，也是安全问题。
+  ///
+  /// 旧的那张失败卡片会被移出列表（它已经终结，留在时间线里只会让
+  /// 「到底发出去了没有」更难判断）；连接记录里那条失败仍然保留。
+  @override
+  Future<Result<int>> retry(int fileId) async {
+    final task = _tasks[fileId];
+    if (task == null) {
+      return Result.error(Exception('这个任务已经不存在了'));
+    }
+    if (task.direction != TransferDirection.sending) {
+      return Result.error(Exception('这是对方发来的文件，请让对方重新发送'));
+    }
+    if (task.status != TransferStatus.failed) {
+      return Result.error(Exception('只有发送失败的文件可以重新发送'));
+    }
+
+    final path = task.localPath;
+    if (path == null || path.isEmpty) {
+      return Result.error(Exception('找不到原文件的位置了，请重新选择文件'));
+    }
+
+    // 会话必须是同一条：换设备之后的 id 完全不同，
+    // 把同一个文件发给另一个人是不可接受的（而且对端也不会答应）。
+    if (_sessionId.isEmpty ||
+        task.sessionId != _sessionId ||
+        _transport.sessionId != _sessionId) {
+      return Result.error(
+        Exception('已经不是刚才那次连接了，请重新连接后再重发'),
+      );
+    }
+
+    final info = _storage.inspect(path);
+    if (!info.exists) {
+      return Result.error(Exception('原文件已经不在原来的位置了：$path'));
+    }
+
+    final id = _newId();
+    _tasks.remove(fileId);
+    _speedStates.remove(fileId);
+
+    _tasks[id] = TransferTask(
+      id: id,
+      fileName: p.basename(task.fileName),
+      // 用**现在**拿到的大小：文件在这期间可能已经变了，
+      // 拿旧值去发会在对账时被判成「文件不一致」而再次失败。
+      totalBytes: info.sizeBytes,
+      direction: TransferDirection.sending,
+      status: TransferStatus.queued,
+      createdAt: DateTime.now(),
+      localPath: path,
+      sessionId: _sessionId,
+    );
+    _queue.add(
+      _QueuedSend(
+        id: id,
+        file: PickedFile(path: path, name: p.basename(task.fileName), size: info.sizeBytes),
+      ),
+    );
+    _emit(force: true);
+    unawaited(_pumpQueue());
+
+    return Result.ok(id);
+  }
+
   /// 串行处理发送队列：一次只向对端提一个请求，等它终结再提下一个。
   Future<void> _pumpQueue() async {
     if (_pumping) return;

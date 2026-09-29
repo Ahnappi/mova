@@ -44,6 +44,12 @@ abstract class HistoryRepository {
   /// 清空全部连接记录。
   Future<void> clearAll();
 
+  /// 按「保留期限」清理过期记录，返回清掉的条数。
+  ///
+  /// 期限本身存在用户设置里（[AppSettings.historyRetentionDays]），
+  /// 由设置页在期限变动时调用；仓库不认识 UI，只负责执行。
+  Future<int> applyRetention();
+
   /// 记录文件路径（用于在「数据存放位置」里展示）。
   Future<String> historyFilePath();
 

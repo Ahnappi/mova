@@ -7,6 +7,7 @@ import '../../../config/app_config.dart';
 import '../../../data/repositories/chat/chat_repository.dart';
 import '../../../data/repositories/discovery/discovery_repository.dart';
 import '../../../data/repositories/history/history_repository.dart';
+import '../../../data/repositories/settings/settings_repository.dart';
 import '../../../data/services/network/network_info_service.dart';
 import '../../../data/services/system/system_settings_service.dart';
 import '../../../domain/models/chat/connection_status.dart';
@@ -25,17 +26,20 @@ class ConnectionViewModel extends ChangeNotifier {
     required NetworkInfoService networkInfoService,
     required HistoryRepository historyRepository,
     required SystemSettingsService systemSettingsService,
+    required SettingsRepository settingsRepository,
   })  : _discoveryRepository = discoveryRepository,
         _chatRepository = chatRepository,
         _networkInfoService = networkInfoService,
         _historyRepository = historyRepository,
-        _systemSettings = systemSettingsService;
+        _systemSettings = systemSettingsService,
+        _settingsRepository = settingsRepository;
 
   final DiscoveryRepository _discoveryRepository;
   final ChatRepository _chatRepository;
   final NetworkInfoService _networkInfoService;
   final HistoryRepository _historyRepository;
   final SystemSettingsService _systemSettings;
+  final SettingsRepository _settingsRepository;
 
   final Logger _log = Logger('ConnectionViewModel');
 
@@ -60,6 +64,62 @@ class ConnectionViewModel extends ChangeNotifier {
 
   /// 是否正在搜索局域网设备（由用户在界面上手动开启/关闭）。
   bool _discovering = false;
+
+  /// 用户在设置里改过名、但本机信息还没算出来时先存着。
+  String? _pendingDeviceName;
+
+  /// 生成本机信息：用户在设置里填的名字优先，没填就用主机名。
+  Future<LocalInfo> _resolveLocalInfo() async {
+    final fallback =
+        await _networkInfoService.getLocalInfo(tcpPort: AppConfig.tcpPort);
+
+    String? preferred;
+    try {
+      preferred = (await _settingsRepository.load()).customDeviceName;
+    } catch (e) {
+      // 读不到设置就退回主机名：名字只是标签，
+      // 不该因为它让整套连接流程起不来。
+      _log.warning('读取设备名失败，退回主机名：$e');
+    }
+    preferred ??= _pendingDeviceName;
+
+    if (preferred == null || preferred.isEmpty) return fallback;
+    return fallback.copyWith(name: preferred);
+  }
+
+  /// 用户在设置里改名的入口（由 SettingsViewModel 回调进来）。
+  ///
+  /// 改名要马上生效才算数：对方的设备列表靠 UDP 心跳刷新，
+  /// 因此正在搜索时先停再开，让下一个心跳（最多 3 秒）就带上新名字；
+  /// 已经建立的连接不会改（hello 帧只在建连时发一次），
+  /// 下次连接才会看到新名字。
+  Future<void> applyDeviceName(String name) async {
+    final trimmed = name.trim();
+    final info = _localInfo;
+
+    if (info == null) {
+      // 本机信息还没算出来（设置页比初始化更早打开）：先记着，初始化时套用。
+      _pendingDeviceName = trimmed.isEmpty ? null : trimmed;
+      return;
+    }
+
+    _pendingDeviceName = trimmed.isEmpty ? null : trimmed;
+    final updated = trimmed.isEmpty
+        ? info.copyWith(name: _networkInfoService.defaultDeviceName())
+        : info.copyWith(name: trimmed);
+    _localInfo = updated;
+    _chatRepository.localName = updated.name;
+    notifyListeners();
+
+    if (!_discovering) return;
+    await _discoveryRepository.stop();
+    final result = await _discoveryRepository.start(updated);
+    if (result is Error<void>) {
+      _errorMessage = result.error.toString();
+      _log.warning('改名后重启搜索失败：${result.error}');
+    }
+    notifyListeners();
+  }
 
   /// 本机信息（初始化前为 null）。
   LocalInfo? get localInfo => _localInfo;
@@ -142,8 +202,9 @@ class ConnectionViewModel extends ChangeNotifier {
     // 忙碌时被拒绝的入站连接：转给界面提示，让用户知道有人来连过。
     _noticeSub = _chatRepository.notices.listen(_noticeController.add);
 
-    _localInfo = await _networkInfoService.getLocalInfo(tcpPort: AppConfig.tcpPort);
-    _chatRepository.localName = _localInfo!.name;
+    final info = await _resolveLocalInfo();
+    _localInfo = info;
+    _chatRepository.localName = info.name;
     notifyListeners();
 
     // 开启监听，让对方可以主动连进来（手动 IP 直连也依赖它）。

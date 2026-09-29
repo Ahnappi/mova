@@ -14,6 +14,8 @@ import '../data/repositories/discovery/discovery_repository.dart';
 import '../data/repositories/discovery/discovery_repository_local.dart';
 import '../data/repositories/history/history_repository.dart';
 import '../data/repositories/history/history_repository_local.dart';
+import '../data/repositories/settings/settings_repository.dart';
+import '../data/repositories/settings/settings_repository_local.dart';
 import '../data/repositories/storage/storage_repository.dart';
 import '../data/repositories/storage/storage_repository_local.dart';
 import '../data/repositories/transfer/transfer_repository.dart';
@@ -33,6 +35,7 @@ import '../data/services/transfer/incoming_file_writer.dart';
 import '../ui/chat/view_models/chat_view_model.dart';
 import '../ui/chat/view_models/connection_view_model.dart';
 import '../ui/counter/view_models/counter_view_model.dart';
+import '../ui/settings/view_models/settings_view_model.dart';
 import '../ui/transfer/view_models/transfer_view_model.dart';
 
 /// 依赖装配（参照 compass_app 的 config/dependencies.dart）。
@@ -72,6 +75,13 @@ List<SingleChildWidget> buildProviders({
     Provider.value(value: log),
     Provider(create: (context) => SettingsService(context.read())),
 
+    // 用户偏好（设备名 / 记录保留期限 / 发送前确认）。
+    // 放在历史仓储之前：后者要靠它知道「记录保留多久」。
+    Provider(
+      create: (context) =>
+          SettingsRepositoryLocal(context.read()) as SettingsRepository,
+    ),
+
     // ---------- 连接记录 ----------
     // Service 层
     Provider(create: (context) => HistoryStorageService(context.read())),
@@ -85,8 +95,10 @@ List<SingleChildWidget> buildProviders({
     // 写盘失败时 dispose() 会抛出（见 HistoryRepositoryLocal），
     // `unawaited` 又没人接结果，不 catchError 就是一条没人管的异步错误。
     Provider(
-      create: (context) =>
-          HistoryRepositoryLocal(context.read()) as HistoryRepository,
+      create: (context) => HistoryRepositoryLocal(
+        context.read(),
+        settingsRepository: context.read(),
+      ) as HistoryRepository,
       dispose: (_, repository) {
         unawaited(repository.dispose().catchError((Object e) {
           Logger('HistoryRepository').warning('兜底的收尾保存失败：$e');
@@ -184,12 +196,23 @@ List<SingleChildWidget> buildProviders({
 
     // ViewModel 层
     ChangeNotifierProvider(
+      create: (context) => SettingsViewModel(
+        settingsRepository: context.read(),
+        historyRepository: context.read(),
+        networkInfoService: context.read(),
+        // 改名要立刻反映到下一拍 UDP 心跳上，否则对方要等到重启才看得到。
+        onDeviceNameChanged: (name) =>
+            context.read<ConnectionViewModel>().applyDeviceName(name),
+      )..load(),
+    ),
+    ChangeNotifierProvider(
       create: (context) => ConnectionViewModel(
         discoveryRepository: context.read(),
         chatRepository: context.read(),
         networkInfoService: context.read(),
         historyRepository: context.read(),
         systemSettingsService: context.read(),
+        settingsRepository: context.read(),
       ),
     ),
     ChangeNotifierProvider(

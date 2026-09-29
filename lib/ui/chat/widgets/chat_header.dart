@@ -8,18 +8,20 @@ import '../../transfer/view_models/transfer_view_model.dart';
 import '../view_models/connection_view_model.dart';
 import 'error_notice_bar.dart';
 
-/// 顶栏：左侧状态徽章（+断开），右侧本机地址胶囊、连接记录与数据存放位置按钮。
+/// 顶栏：左侧状态徽章（+断开），右侧本机地址胶囊、连接记录、数据存放位置与设置按钮。
 class ChatHeader extends StatelessWidget {
   const ChatHeader({
     super.key,
     required this.connection,
     required this.onOpenHistory,
     required this.onOpenStorage,
+    required this.onOpenSettings,
   });
 
   final ConnectionViewModel connection;
   final VoidCallback onOpenHistory;
   final VoidCallback onOpenStorage;
+  final VoidCallback onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -88,6 +90,11 @@ class ChatHeader extends StatelessWidget {
           PressableScale(
             onTap: onOpenStorage,
             child: _HeaderButton(icon: Icons.storage_rounded),
+          ),
+          const SizedBox(width: 10),
+          PressableScale(
+            onTap: onOpenSettings,
+            child: _HeaderButton(icon: Icons.settings_outlined),
           ),
         ],
       ),
