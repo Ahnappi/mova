@@ -160,12 +160,23 @@ void main() {
     // 按截止时间轮询，而不是数够多少次就停：慢机器上每次 sleep 都会被拉长，
     // 数迭代次数等于给传输定了一个看不见的时间上限，任务还没传完采样就停了。
     final deadline = DateTime.now().add(const Duration(minutes: 2, seconds: 30));
+    final watch = Stopwatch()..start();
+    final trail = <String>[];
+    TransferStatus? previousStatus;
     var transferringSamples = 0;
     TransferTask? last;
     while (DateTime.now().isBefore(deadline)) {
       final tasks = senderRepo.currentTasks;
       if (tasks.isNotEmpty) {
         last = tasks.single;
+        // 记下每个状态待到什么时候才切走：慢机器上光看最终结果是猜不出
+        // 卡在哪一段的，有了这条轨迹才能区分「传输停滞」「等回执超时」
+        // 还是「sendFileStream 自己报错」。
+        if (last.status != previousStatus) {
+          trail.add('${previousStatus?.name ?? '起'}→${last.status.name}'
+              '@${watch.elapsedMilliseconds}ms');
+          previousStatus = last.status;
+        }
         if (last.status == TransferStatus.transferring) {
           transferringSamples++;
         } else if (last.isFinished) {
@@ -173,6 +184,25 @@ void main() {
         }
       }
       await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+
+    // 失败时一次性把双方状态摊开：CI 上很难复现这类问题，
+    // 只报「期望 completed，实际 failed」等于要人在黑箱里猜。
+    String dumpTodo(String what) {
+      final saved = File('${saveDir.path}/big.bin');
+      final savedLength = saved.existsSync() ? saved.lengthSync() : -1;
+      final peer = receiverRepo.currentTasks
+          .map((t) => '${t.status.name} 已收${t.transferredBytes}/${t.totalBytes}'
+              ' 错误=${t.error}')
+          .join('；');
+      return '$what\n'
+          '  发送端：${last?.status.name} 已发${last?.transferredBytes}'
+          '/${last?.totalBytes} 错误=${last?.error}\n'
+          '  接收端：${peer.isEmpty ? '（任务已清空）' : peer}\n'
+          '  落盘：expect $size，实际 $savedLength（存在=${saved.existsSync()}）\n'
+          '  状态轨迹：${trail.join('  ')}\n'
+          '  采样到 transferring $transferringSamples 次，总耗时'
+          ' ${watch.elapsedMilliseconds}ms';
     }
 
     // 采样到多次 transferring，说明这次传输确实跨过了看护计时器的多个周期。
@@ -183,7 +213,8 @@ void main() {
     );
     expect(last, isNotNull);
     expect(last!.status, TransferStatus.completed,
-        reason: '长时间传输被超时误判了。任务自己记录的原因是：${last.error}');
-    expect(await File('${saveDir.path}/big.bin').length(), size);
+        reason: dumpTodo('长时间传输被判失败了。'));
+    expect(await File('${saveDir.path}/big.bin').length(), size,
+        reason: dumpTodo('收到的文件字节数对不上。'));
   }, timeout: const Timeout(Duration(minutes: 3)));
 }
