@@ -112,15 +112,29 @@ void main() {
 
   test('持续传输的大文件不会被「等待响应」超时误杀', () async {
     // 关键：等待响应的上限远小于传输耗时。
+    //
+    // 除 offerTimeout 外，其余超时一律显式放大（默认走 AppConfig：
+    // 停滞 90 秒、回执 60 秒）。这不是偷懒，而是这条用例只打算验证
+    // **一件事**：「等对端应答」的计时器不许跨界管到已经开传的任务上。
+    // CI 这类慢机器上 13 个测试文件并行抢 2 个核，传一百多兆必然出现
+    // 较长的空档；若沿用默认值，真正的停滞看护会把它拦下来，用例就以
+    // 「传输失败」告终——红了的原因却不是它要盯的那个 bug。
+    const plenty = Duration(minutes: 5);
     final senderRepo = TransferRepositoryLocal(
       sender,
       fileStorage(),
       offerTimeout: const Duration(milliseconds: 500),
-      stallTimeout: const Duration(minutes: 5),
+      stallTimeout: plenty,
+      ackTimeout: const Duration(minutes: 2),
     );
     addTearDown(() => senderRepo.dispose());
 
-    final receiverRepo = TransferRepositoryLocal(receiver, fileStorage());
+    // 接收端同样被默认停滞超时管着：写盘 isolate 被拖慢时它也会先超时。
+    final receiverRepo = TransferRepositoryLocal(
+      receiver,
+      fileStorage(),
+      stallTimeout: plenty,
+    );
     addTearDown(() => receiverRepo.dispose());
 
     receiverRepo.tasks.listen((tasks) {
@@ -132,16 +146,23 @@ void main() {
       }
     });
 
-    const size = 150 * 1024 * 1024;
+    // 看护计时器是每秒一次的：必须让传输清楚地跨过好几个周期，
+    // 否则传输在两次 tick 之间就结束了，这条用例会变成摆设。
+    // （实测 150MB 在快机器上一秒就传完了，看护一次都没扫到。）
+    const size = 512 * 1024 * 1024;
     final file = await makeFile('big.bin', size);
     await senderRepo.sendFiles([
       PickedFile(path: file.path, name: 'big.bin', size: size),
     ]);
 
     // 传输过程中持续采样：不能有「未响应」之类的超时失败。
+    //
+    // 按截止时间轮询，而不是数够多少次就停：慢机器上每次 sleep 都会被拉长，
+    // 数迭代次数等于给传输定了一个看不见的时间上限，任务还没传完采样就停了。
+    final deadline = DateTime.now().add(const Duration(minutes: 2, seconds: 30));
     var transferringSamples = 0;
     TransferTask? last;
-    for (var i = 0; i < 600; i++) {
+    while (DateTime.now().isBefore(deadline)) {
       final tasks = senderRepo.currentTasks;
       if (tasks.isNotEmpty) {
         last = tasks.single;
@@ -161,7 +182,8 @@ void main() {
       reason: '传输太快结束，这条用例没能真正覆盖「长时间传输」',
     );
     expect(last, isNotNull);
-    expect(last!.status, TransferStatus.completed);
+    expect(last!.status, TransferStatus.completed,
+        reason: '长时间传输被超时误判了。任务自己记录的原因是：${last.error}');
     expect(await File('${saveDir.path}/big.bin').length(), size);
   }, timeout: const Timeout(Duration(minutes: 3)));
 }
