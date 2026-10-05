@@ -114,7 +114,10 @@ jobs:
         working-directory: ${{ steps.locate.outputs.dir }}
 
       - name: 运行测试
-        run: flutter test
+        # --reporter expanded：逐条列出用例名与失败断言。
+        # 默认的紧凑输出只给一个 (failed)，看不出是哪条断言、哪个任务状态，
+        # 排查 CI 上的偶发失败等于大海捞针。
+        run: flutter test --reporter expanded
         working-directory: ${{ steps.locate.outputs.dir }}
 
   # ---------------- Windows ----------------
