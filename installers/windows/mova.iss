@@ -69,7 +69,12 @@ CloseApplications=yes
 RestartApplications=no
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; 中文用**仓库里**的语言文件（installers\windows\Languages\ChineseSimplified.isl）：
+; 中文不是 Inno Setup 的默认语言，编译器自带的 Languages 目录有没有它，
+; 取决于装的是完整版还是精简版、装到哪台机器上。用它就等同于把「这台
+; CI 机器正好装了中文包」当前提——换个 Runner 就编不过（或直接退回英文）。
+; 英文仍用编译器自带的 Default.isl，它一定存在，不必复制一份进仓库。
+Name: "chinesesimplified"; MessagesFile: "Languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]

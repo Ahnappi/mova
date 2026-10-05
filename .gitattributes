@@ -1,0 +1,4 @@
+# Inno Setup 的语言文件保持上游原样（CRLF）。
+# 仓库的 core.autocrlf=input 会把它规整成 LF，虽然 Inno Setup 也读得懂，
+# 但那样就没法和上游逐字节比对了——升级时要先确认「文件到底改没改」。
+installers/windows/Languages/*.isl text eol=crlf
