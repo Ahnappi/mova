@@ -32,6 +32,9 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+# 打包产物（installers/ 脚本的输出：DMG、zip、安装程序）
+# 几十 MB 的镜像和 exe 不该进仓库，要用就从 Release 下载或本地重新生成。
+/dist/
 
 # Symbolication related
 app.*.symbols

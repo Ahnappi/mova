@@ -27,6 +27,20 @@ class FileOpenerService {
     return false;
   }
 
+  /// 在默认浏览器里打开一个网址（更新下载页用）。
+  ///
+  /// 没有引入 url_launcher：三个桌面平台各自的命令都能直接开 URL，
+  /// 为了一次跳转多引一个插件不划算。
+  Future<bool> openUrl(String url) async {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return false;
+
+    if (Platform.isMacOS) return _run('open', [trimmed]);
+    if (Platform.isWindows) return _run('cmd', ['/c', 'start', '', trimmed]);
+    if (Platform.isLinux) return _run('xdg-open', [trimmed]);
+    return false;
+  }
+
   Future<bool> _run(String executable, List<String> args) async {
     try {
       final result = await Process.run(executable, args);

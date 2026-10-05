@@ -32,6 +32,8 @@ import 'protocol.dart';
 ///   （见 [sendFileStream]）：传大文件时若中途与 A 断开、随后连上 B，
 ///   旧循环剩下的字节绝不会写给 B；最后一次 `flush()`（等网络排空的那一步）
 ///   结束后同样会再核对一次取消，避免「最后一块已发出」时取消失效。
+///   连**单次写入**也钉死排队那一刻的连接（见 [_write]）：写入链上的
+///   帧可能被前面的 flush 挡住很久，只按执行时的 socket 发就会发错设备。
 ///
 /// 连接尝试也有归属（见 [connect]）：[isBusy] 把「正在连接」也算作占用，
 /// 一次尝试只由它自己的令牌决定是否还能改动连接状态，过期尝试的失败
@@ -58,8 +60,17 @@ typedef SocketConnector = Future<Socket> Function(
 
 class ChatTransportService {
   /// [connector] 只给测试用：默认走 [Socket.connect]。
-  ChatTransportService({SocketConnector? connector})
-      : _connector = connector ?? _defaultConnect;
+  ///
+  /// [keepAliveInterval] / [keepAliveTimeout] 同理：默认是 [AppConfig] 里
+  /// 那两个值，但「等 20 秒才发现对端没了」在测试里实在太慢，
+  /// 注入成几百毫秒就能把这条规则验得又快又确定。
+  ChatTransportService({
+    SocketConnector? connector,
+    Duration? keepAliveInterval,
+    Duration? keepAliveTimeout,
+  })  : _connector = connector ?? _defaultConnect,
+        _keepAliveInterval = keepAliveInterval ?? AppConfig.keepAliveInterval,
+        _keepAliveTimeout = keepAliveTimeout ?? AppConfig.keepAliveTimeout;
 
   ServerSocket? _server;
   Socket? _socket;
@@ -118,6 +129,94 @@ class ChatTransportService {
   bool get isConnecting => _connecting;
 
   bool _connecting = false;
+
+  // ---------- 存活探测（心跳） ----------
+  //
+  // TCP 建好之后如果两端都不说话，谁也不知道对方还在不在。对端合盖、
+  // Wi-Fi 断了、进程被杀，这些情况既不发 FIN 也不发 RST，本端会一直
+  // 「以为还连着」——界面上就是「一直在接收，进度不动」，直到几分钟后
+  // 下一次真正写数据失败才暴露。
+  //
+  // 所以建连后定期互发 ping：只要这条连接上还有字节在动（无论哪个方向、
+  // 是心跳还是文件数据），就证明对端还在；连续几个周期一个字节都没有，
+  // 就判定连接已死并主动断开，让上层及时把任务判失败。
+  //
+  // 但「收不到字节就判死」这条判据**必须先协商能力**才能用：
+  // 老版本对端既不主动发 ping，也不会回应 ping，空闲二十几秒是它的
+  // 正常状态。若一端升级、另一端没升级，新的一端会把自己好端端的
+  // 连接主动掐断。因此只有在 hello 里确认对端支持心跳之后
+  // （见 [_remoteKeepAliveCapable]）才启用这条判据；不支持时仍然照发
+  // ping（对端忽略未知帧，见 FrameReader），只是不再据此断链。
+  Timer? _keepAliveTimer;
+
+  /// 最近一次收到对端字节的时间（任何帧都算，包括心跳）。
+  DateTime? _lastInboundAt;
+
+  /// 最近一次往对端发出字节的时间。
+  ///
+  /// 正在传文件时数据本身就是存活证明，不必再叠加心跳——只在确实
+  /// 一段时间没往外发过东西时才补一个 ping。
+  DateTime? _lastOutboundAt;
+
+  final Duration _keepAliveInterval;
+  final Duration _keepAliveTimeout;
+
+  void _startKeepAlive() {
+    _stopKeepAlive();
+    final now = DateTime.now();
+    _lastInboundAt = now;
+    _lastOutboundAt = now;
+    _keepAliveTimer = Timer.periodic(_keepAliveInterval, (_) {
+      _keepAliveTick();
+    });
+  }
+
+  void _stopKeepAlive() {
+    _keepAliveTimer?.cancel();
+    _keepAliveTimer = null;
+    _lastInboundAt = null;
+    _lastOutboundAt = null;
+  }
+
+  /// 对端是否具备心跳能力（收到它的 hello 之后才为真）。
+  ///
+  /// 老版本既不发 ping 也不会回应 ping，[keepAliveTimeout] 内「零入向
+  /// 字节」对它是常态。只有确认它会发心跳，才能把「收不到字节」当成
+  /// 它已经不在的证据——否则版本一不一致就把正常连接掐断了。
+  bool get remoteKeepAliveCapable => _remoteKeepAliveCapable;
+
+  bool _remoteKeepAliveCapable = false;
+
+  void _keepAliveTick() {
+    if (_socket == null) return;
+    final now = DateTime.now();
+
+    // 先判死活：太久没收到任何字节，就当对端已经不在了。
+    //
+    // 判死活这件事不能用「我发出去的 ping 有没有回音」来做——ping 是
+    // 单向的空帧，对端不需要回包。只要这条连接上还有字节在动即可。
+    //
+    // 前提是对端**会**发心跳：老版本空闲时本来就是零字节，
+    // 拿这个当判据等于一升级就把老连接全断掉（见 [_remoteKeepAliveCapable]）。
+    final lastIn = _lastInboundAt;
+    if (_remoteKeepAliveCapable &&
+        lastIn != null &&
+        now.difference(lastIn) > _keepAliveTimeout) {
+      _log.info(
+        '已 ${_keepAliveTimeout.inSeconds} 秒没收到对端任何数据，判定连接已断开',
+      );
+      // 走 disconnect 而不是只广播状态：必须把 socket 真正关掉，
+      // 否则这条半开连接会一直占着，用户点「连接」也连不上。
+      unawaited(disconnect());
+      return;
+    }
+
+    // 这一段时间确实没往外发过东西，补一个心跳。
+    final lastOut = _lastOutboundAt;
+    if (lastOut == null || now.difference(lastOut) >= _keepAliveInterval) {
+      _write(encodeFrame(MessageType.ping, Uint8List(0)));
+    }
+  }
 
   /// 是否已封存（退出流程进行中，不再接受任何连接与发送）。
   ///
@@ -275,6 +374,9 @@ class ChatTransportService {
     required int fileId,
     required String name,
     required int size,
+    int? batchId,
+    int? batchIndex,
+    int? batchCount,
   }) async {
     if (_sealed || _socket == null) {
       return Result.error(
@@ -285,6 +387,12 @@ class ChatTransportService {
       'id': fileId,
       'name': name,
       'size': size,
+      // 批次信息：同一批选中的文件共享 batchId，接收端据此把它们聚成
+      // 一组一起展示，而不是逐个弹卡片。老对端忽略这三个字段即可，
+      // 行为退化成「一次只处理一个」。
+      'batch': ?batchId,
+      'batchIndex': ?batchIndex,
+      'batchCount': ?batchCount,
     }));
     return Result.ok(null);
   }
@@ -435,8 +543,11 @@ class ChatTransportService {
         onProgress?.call(sent);
 
         // 背压：积压到阈值就等 socket 真正写出去，避免内存被读盘速度拖爆。
+        //
+        // flush 也必须走写入链：它执行期间 sink 处于「已绑定」状态，
+        // 别的并发流这时 add 会直接抛错。
         if (inFlight >= AppConfig.maxInFlightBytes) {
-          await socket.flush();
+          await _flush(socket);
           inFlight = 0;
         }
       }
@@ -445,7 +556,8 @@ class ChatTransportService {
       if (!identical(_socket, socket) || _sessionId != bound) {
         return Result.error(Exception('连接已切换，发送中止'));
       }
-      await socket.flush();
+      // 收尾 flush 同样要走写入链（理由见 [maxInFlightBytes] 那处背压）。
+      await _flush(socket);
 
       // 排空这一次 await 期间同样可能出事，因此必须再核对一遍：
       // 少了这一步，「最后一块已写出、正在等网络排空」时点下的取消会失效
@@ -479,12 +591,14 @@ class ChatTransportService {
 
   /// 断开当前会话（监听仍保留，对方可再次连入）。
   Future<void> disconnect() async {
+    _stopKeepAlive();
     await _socketSub?.cancel();
     _socketSub = null;
     _socket?.destroy();
     _socket = null;
     _sessionId = null;
     _remoteProtocolVersion = 1;
+    _remoteKeepAliveCapable = false;
     // 主动断开后，此前还在跑的连接尝试一律作废：它们的成败都不再算数，
     // 也就不允许再广播 disconnected（此刻可能已经连上了别的设备）。
     _connectToken++;
@@ -513,20 +627,97 @@ class ChatTransportService {
     _server = null;
   }
 
-  void _write(Uint8List frame) {
-    _socket?.add(frame);
+  /// 写入串行链：同一时刻只允许一个操作碰 socket 的输出缓冲。
+  ///
+  /// 为什么要串行化——这是支持「多文件同时传输」时才暴露出来的坑：
+  /// dart:io 的 IOSink 在执行 `flush()` 期间会把 sink 标记为「已绑定」
+  /// （io_sink.dart:191 的 `_isBound = true`），**此时再调用 `add()` 会
+  /// 直接抛** `StateError('StreamSink is bound to a stream')`。
+  /// 并发推两个文件时，一路在 flush、另一路在 add，正好撞上。
+  ///
+  /// 因此 add 与 flush 必须排在一条链上依次执行。注意串行化只决定谁先
+  /// 谁后：每次 add 仍是「整帧一次性写入」（见 [encodeFrame]），
+  /// 不会把两个文件的字节搅在一起，接收端依旧按 fileId 分得清。
+  Future<void> _writeChain = Future<void>.value();
+
+  /// 把 [action] 接到写入链的尾部，前一个完成后才轮到它。
+  ///
+  /// 链本身永不因异常断裂：前一个的错误已经吞掉，自己的 [whenComplete]
+  /// 保证后一个一定会被放行。
+  Future<T> _chain<T>(Future<T> Function() action) {
+    final previous = _writeChain;
+    final next = Completer<void>();
+    _writeChain = next.future;
+    return previous
+        .catchError((Object _) {})
+        .then((_) => action())
+        .whenComplete(() {
+          if (!next.isCompleted) next.complete();
+        });
   }
+
+  /// 把 [frame] 排到写入链上，并**钉死目标连接与会话**。
+  ///
+  /// 关键是「入队」与「执行」之间可能隔着很久：链上前面若压着一个
+  /// 32MiB 的 flush，这一帧要等网络排空才轮得到。而等待期间完全可能
+  /// 已经从 A 断开、转连 B——若执行时只看「当前的 _socket」，
+  /// A 的文件数据块、取消帧、结束帧就会写给 B。数据一旦离开本机、
+  /// 发向错误的设备，就再也收不回来了。
+  ///
+  /// 所以目标 socket 与会话在**入队那一刻**记下来，真正执行时再核对一遍：
+  /// 连接或会话已经换人，这一帧直接丢弃（宁可丢一帧，也不能发错对象）。
+  void _enqueueWrite(
+    Uint8List frame, {
+    required Socket? socket,
+    required String? session,
+  }) {
+    unawaited(
+      _chain(() async {
+        final current = _socket;
+        if (current == null) return;
+        // 会话校验：null / 空串表示这一帧不绑定会话（普通控制帧）。
+        if (session != null && session.isNotEmpty && _sessionId != session) {
+          return;
+        }
+        // 连接校验：排队期间连接已经换人，这一帧属于旧连接，丢弃。
+        if (socket != null && !identical(current, socket)) return;
+        current.add(frame);
+        _lastOutboundAt = DateTime.now();
+      }),
+    );
+  }
+
+  /// 写一帧普通控制帧：绑定**当前连接**，不绑定会话。
+  ///
+  /// 绑定连接同样必要：text / offer / accept 这类帧虽然「发出即生效」，
+  /// 但排在写入链上时也可能被前面的 flush 挡住；等到轮到自己时连接若已
+  /// 换人，把它交给新设备同样是错的（比如把「同意接收」发给了 B）。
+  void _write(Uint8List frame) =>
+      _enqueueWrite(frame, socket: _socket, session: null);
 
   /// 会话绑定的写入：[session] 与当前会话不一致时直接丢弃这一帧。
   ///
   /// 跨越多次 await 的操作（发送文件、收尾回执）必须用它：
   /// 中途断连再连上别的设备后，旧操作剩下的帧绝不能再发出去。
-  /// [session] 为 null 表示不校验（控制帧，发出即生效）。
+  /// [session] 为 null 表示不校验会话（但仍校验连接）。
   void _writeInSession(Uint8List frame, String? session) {
-    // 空串视为「未绑定」：调用方拿不到会话标识时不校验，
-    // 由调用方自己的 socket 身份检查兜底。
-    if (session != null && session.isNotEmpty && _sessionId != session) return;
-    _socket?.add(frame);
+    // 空串视为「未绑定」：调用方拿不到会话标识时不校验会话。
+    final expected =
+        (session != null && session.isNotEmpty) ? session : null;
+    // 入队前先核对一次：明显不属于当前会话的帧，连排队的必要都没有。
+    if (expected != null && _sessionId != expected) return;
+    _enqueueWrite(frame, socket: _socket, session: expected);
+  }
+
+  /// 排空 [socket] 上积压的数据（同样排在写入链上）。
+  ///
+  /// 也要绑定连接：轮到自己时这条 socket 可能已经随会话切换被销毁，
+  /// 对它 flush 既没有意义，也可能永远等不到返回。
+  Future<void> _flush(Socket socket) {
+    return _chain(() async {
+      if (!identical(_socket, socket)) return;
+      await socket.flush();
+    });
   }
 
   /// 接管一个已建立的 socket（入站或出站）。
@@ -568,6 +759,9 @@ class ChatTransportService {
     _socket = socket;
     remoteName = null;
     _remoteProtocolVersion = 1;
+    // 收到对端 hello 之前一律按「不具备心跳能力」处理：
+    // 这时还不能拿「收不到字节」当断链证据。
+    _remoteKeepAliveCapable = false;
     _lastRemoteAddress = socket.remoteAddress.address;
     _sessionId = 's${++_sessionCounter}';
     // 会话一建立，此前所有「正在进行的连接尝试」立即作废：
@@ -576,10 +770,14 @@ class ChatTransportService {
     _connecting = false;
     _statusController.add(ConnectionStatus.connected);
 
-    // 建连后互报名字与协议版本。
+    // 建连后互报名字、协议版本与能力位。
+    //
+    // 'ka' 是心跳能力位：老版本不认识这个键，直接忽略（JSON 里多一个键
+    // 不影响它解析 name / proto），于是它们天然是「不具备心跳能力」。
     _write(encodeJsonFrame(MessageType.hello, {
       'name': localName,
       'proto': AppConfig.protocolVersion,
+      'ka': true,
     }));
 
     _socketSub = socket.listen(
@@ -588,11 +786,17 @@ class ChatTransportService {
       onError: (Object _) => _onSocketClosed(),
       cancelOnError: true,
     );
+    _startKeepAlive();
   }
 
   void _onSocketClosed() {
+    _stopKeepAlive();
+    // 到这一步订阅已经结束（onDone 自然结束 / cancelOnError 已取消），
+    // 把引用清掉，免得之后 pauseInbound / resumeInbound 打在死对象上。
+    _socketSub = null;
     _socket = null;
     _sessionId = null;
+    _remoteKeepAliveCapable = false;
     // 残留的半截帧不能带到下一次连接。
     _reader.reset();
     _statusController.add(ConnectionStatus.disconnected);
@@ -600,6 +804,8 @@ class ChatTransportService {
 
   /// 收到字节：交给帧解析器，逐帧分发。
   void _feed(Uint8List chunk) {
+    // 收到任何字节都算「对端还活着」：可能是心跳，也可能是文件数据。
+    _lastInboundAt = DateTime.now();
     _reader.add(chunk);
     final frames = _reader.drain();
 
@@ -633,6 +839,11 @@ class ChatTransportService {
           remoteName = frame.json['name'] as String? ?? '对端';
           _remoteProtocolVersion =
               (frame.json['proto'] as num?)?.toInt() ?? 1;
+          // 能力位优先，版本号兜底：两者只要有一个表明对端会发心跳，
+          // 就可以启用「收不到字节即断链」这条判据。
+          _remoteKeepAliveCapable =
+              frame.json['ka'] == true ||
+              _remoteProtocolVersion >= AppConfig.keepAliveProtocolVersion;
         case MessageType.text:
           final json = frame.json;
           _messageController.add(
@@ -652,6 +863,9 @@ class ChatTransportService {
               fileId: json['id'] as int? ?? 0,
               name: json['name'] as String? ?? '未知文件',
               size: json['size'] as int? ?? 0,
+              batchId: (json['batch'] as num?)?.toInt(),
+              batchIndex: (json['batchIndex'] as num?)?.toInt(),
+              batchCount: (json['batchCount'] as num?)?.toInt(),
             ),
           );
         case MessageType.fileAccept:
@@ -697,6 +911,10 @@ class ChatTransportService {
               reason: json['reason'] as String?,
             ),
           );
+        case MessageType.ping:
+          // 什么都不用做：能收到这一帧本身就证明对端还活着，
+          // 「最近收到字节的时间」已在 _feed 里刷新过了。
+          break;
       }
     } catch (e) {
       // 单帧解析失败不应影响整条连接。

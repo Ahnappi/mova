@@ -6,11 +6,30 @@ sealed class TransferEvent {}
 
 /// 对端发来文件发送请求。
 class OfferReceived extends TransferEvent {
-  OfferReceived({required this.fileId, required this.name, required this.size});
+  OfferReceived({
+    required this.fileId,
+    required this.name,
+    required this.size,
+    this.batchId,
+    this.batchIndex,
+    this.batchCount,
+  });
 
   final int fileId;
   final String name;
   final int size;
+
+  /// 批次标识：同一次「批量发送」的文件共享同一个值。
+  ///
+  /// 接收端据此把它们聚成一组一起展示（一次决定收哪些），而不是逐个
+  /// 弹卡片。单独发来的文件（不是批量发送）为 null，退回逐个处理。
+  final int? batchId;
+
+  /// 在本批中的序号（从 0 开始），用于按发送端的顺序展示。
+  final int? batchIndex;
+
+  /// 本批总共有几个文件。
+  final int? batchCount;
 }
 
 /// 对端同意接收（我方可以开始推流了）。

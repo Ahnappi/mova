@@ -103,56 +103,88 @@ void main() {
     return file;
   }
 
-  test('排队中的文件不会因为「等待响应」超时而失败', () async {
-    // 对端一次都不点接收：第一个文件必然在 offerTimeout 后被判「未响应」，
-    // 而第二个文件在这段时间里一直排在队列里、请求根本没发出去。
-    // 若排队也算在计时内（拿 createdAt 兜底），它会在轮到之前就一起失败。
+  test('已同意但在等并发名额的文件不会被「等待响应」超时误杀', () async {
+    // 并发上限是 3，这里一次发 5 个并让接收端全部同意。于是只有前 3 个
+    // 能立刻开始推流，后 2 个只能在队列里等名额——它们仍然是 waiting
+    // 状态，若「等对端应答」的计时器没在收到同意时撤掉，排一会儿就会被
+    // 判成「对方没有响应」，可对方明明已经同意了。
+    //
+    // 这是支持并发之后才有的排队形态：以前一次只发一个请求、等这个文件
+    // 彻底传完才发下一个，压根不存在「已同意但还没轮到」这种状态。
+    // 排队不计时的老规则现在由这条路来接。
     final senderRepo = TransferRepositoryLocal(
       sender,
       fileStorage(),
-      offerTimeout: const Duration(seconds: 2),
+      // 故意给得极短：只要排队超过 0.5 秒就会被误杀（若没有保护）。
+      offerTimeout: const Duration(milliseconds: 500),
       stallTimeout: const Duration(minutes: 5),
     );
     addTearDown(() => senderRepo.dispose());
 
-    // 接收端什么都不做。
     final receiverRepo = TransferRepositoryLocal(receiver, fileStorage());
     addTearDown(() => receiverRepo.dispose());
 
-    TransferTask? byName(List<TransferTask> tasks, String name) => tasks
-        .cast<TransferTask?>()
-        .firstWhere((task) => task?.fileName == name, orElse: () => null);
+    // 收到请求就同意：整批 5 个都会被同意，从而制造出「3 个在传、
+    // 2 个在等」的局面。
+    receiverRepo.tasks.listen((tasks) {
+      for (final task in tasks) {
+        if (task.direction == TransferDirection.receiving &&
+            task.status == TransferStatus.waiting) {
+          unawaited(receiverRepo.accept(task.id, saveDirectory: saveDir.path));
+        }
+      }
+    });
 
-    final first = await makeFile('first.bin', 32 * 1024);
-    final second = await makeFile('second.bin', 32 * 1024);
-    await senderRepo.sendFiles([
-      PickedFile(path: first.path, name: 'first.bin', size: 32 * 1024),
-      PickedFile(path: second.path, name: 'second.bin', size: 32 * 1024),
-    ]);
+    const size = 32 * 1024 * 1024;
+    const count = 5;
+    final files = <PickedFile>[];
+    for (var i = 0; i < count; i++) {
+      final file = await makeFile('f$i.bin', size);
+      files.add(PickedFile(path: file.path, name: 'f$i.bin', size: size));
+    }
+    await senderRepo.sendFiles(files);
 
-    var queuedEverFailed = false;
-    var queuedSamples = 0;
-    for (var i = 0; i < 100; i++) {
+    var queuedWhileOthersSending = 0;
+    var maxSending = 0;
+    String? firstFailure;
+    for (var i = 0; i < 400; i++) {
       final tasks = senderRepo.currentTasks;
-      final one = byName(tasks, 'first.bin');
-      final two = byName(tasks, 'second.bin');
-      if (two?.status == TransferStatus.failed) queuedEverFailed = true;
-      if (two?.status == TransferStatus.queued) queuedSamples++;
-      if (one == null || one.isFinished) break;
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final sending = tasks
+          .where((task) => task.status == TransferStatus.transferring)
+          .length;
+      final waiting = tasks
+          .where((task) => task.status == TransferStatus.waiting)
+          .length;
+      if (sending > maxSending) maxSending = sending;
+      // 「有人在传、也有人还在等」= 确实出现了排队。
+      if (sending > 0 && waiting > 0) queuedWhileOthersSending++;
+      for (final task in tasks) {
+        if (task.status == TransferStatus.failed) {
+          firstFailure ??= '${task.fileName}：${task.error}';
+        }
+      }
+      if (tasks.length == count && tasks.every((task) => task.isFinished)) {
+        break;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
     }
 
-    // 第二个文件确实排过队（否则这条用例没覆盖到排队状态）。
-    expect(queuedSamples, greaterThan(0), reason: '第二个文件没有进入排队状态');
-    expect(queuedEverFailed, isFalse,
-        reason: '还没轮到的文件被判成了「对方没有响应」');
+    // 前提：这次确实观察到了排队，否则这条用例等于空跑。
+    expect(queuedWhileOthersSending, greaterThan(0),
+        reason: '没观察到排队——并发上限可能没生效，这条用例就没意义了');
+    expect(firstFailure, isNull, reason: '有文件被判失败了：$firstFailure');
+    expect(maxSending, lessThanOrEqualTo(AppConfig.maxConcurrentTransfers),
+        reason: '同时在传的文件数超过了并发上限');
 
-    // 轮到它之后才进入等待应答，而不是直接带着失败原因出现。
-    final nowQueued = byName(senderRepo.currentTasks, 'second.bin');
-    expect(nowQueued, isNotNull);
-    expect(nowQueued!.isFinished, isFalse);
-    expect(nowQueued.error, isNull);
-  }, timeout: const Timeout(Duration(minutes: 1)));
+    final finished = senderRepo.currentTasks;
+    expect(finished.length, count);
+    expect(
+      finished.where((task) => task.status == TransferStatus.completed).length,
+      count,
+      reason: '有文件没传完：'
+          '${finished.map((task) => '${task.fileName}=${task.status.name}').join(', ')}',
+    );
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('取消已发出的请求后，迟到的「接收」不会让文件重新发出', () async {
     final senderRepo = TransferRepositoryLocal(sender, fileStorage());

@@ -110,9 +110,13 @@ void main() {
           bigFileId ??= task.id;
           unawaited(receiverRepo.accept(task.id, saveDirectory: saveDir.path));
         }
+        // 一看到进度就取消。以前要等够整整一个块才动手，块一大，
+        // 等待的这段时间里发送方已经把更多数据推进 socket，
+        // 「远没有传完」这条断言的余量就被吃掉了
+        // （8MiB 一块时全量并行跑会偶发失败）。
         if (task.fileName == 'big.bin' &&
             !cancelRequested &&
-            task.transferredBytes >= AppConfig.fileChunkSize) {
+            task.transferredBytes > 0) {
           cancelRequested = true;
           unawaited(receiverRepo.cancel(task.id));
         }
@@ -140,14 +144,23 @@ void main() {
       ),
     );
 
-    // 让残留数据再飞一会儿，确认发送方真的不再继续推。
+    // 取消之前就已经在路上的数据拦不住，给它们一点时间落地。
+    await Future<void>.delayed(const Duration(seconds: 1));
+    final settledChunks = bigChunks;
     await Future<void>.delayed(const Duration(seconds: 2));
+    expect(
+      bigChunks,
+      settledChunks,
+      reason: '取消之后推流没有停下来：又多收了 ${bigChunks - settledChunks} 块。'
+          '判据用「不再增长」而不是比对总数——后者会被文件大小和块大小'
+          '牵着走，机器一慢余量就没了',
+    );
 
     final totalChunks = (totalBytes / AppConfig.fileChunkSize).ceil();
     expect(
       bigChunks,
       lessThan(totalChunks),
-      reason: '取消后发送方应立刻停止推流，实际却把整个文件都推完了',
+      reason: '取消后发送方应停在半路，实际却把整个文件都推完了',
     );
 
     // 第二个文件要能正常接收完成。

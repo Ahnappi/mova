@@ -37,7 +37,9 @@ import 'package:mova/domain/models/transfer/picked_file.dart';
 import 'package:mova/domain/models/transfer/transfer_task.dart';
 import 'package:mova/config/dependencies.dart';
 import 'package:mova/ui/chat/view_models/connection_view_model.dart';
+import 'package:mova/data/services/update/update_service.dart';
 import 'package:mova/ui/settings/view_models/settings_view_model.dart';
+import 'package:mova/ui/settings/view_models/update_view_model.dart';
 import 'package:mova/ui/settings/widgets/settings_dialog.dart';
 import 'package:mova/ui/transfer/widgets/send_confirm_dialog.dart';
 import 'package:mova/ui/transfer/widgets/transfer_card.dart';
@@ -857,9 +859,21 @@ void main() {
 
       // Provider 必须包在 MaterialApp **外面**：弹窗是新 route，
       // 挂在 Navigator 之下，拿不到 home 内部那一层 Provider。
+      // 设置弹窗里有「版本与更新」一节，它也要一个 UpdateViewModel；
+      // 这条用例不关心更新，给一个永不发请求的替身即可。
+      final updateVm = UpdateViewModel(
+        updateService: UpdateService(
+          fetcher: (url, timeout) async => '{"versionCode": 0}',
+        ),
+      );
+      addTearDown(updateVm.dispose);
+
       await tester.pumpWidget(
-        ChangeNotifierProvider<SettingsViewModel>.value(
-          value: vm,
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<SettingsViewModel>.value(value: vm),
+            ChangeNotifierProvider<UpdateViewModel>.value(value: updateVm),
+          ],
           child: MaterialApp(
             home: Scaffold(
               body: Builder(

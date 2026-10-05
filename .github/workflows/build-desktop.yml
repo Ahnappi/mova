@@ -6,9 +6,32 @@
 #
 # ---------------------------------------------------------------------------
 # 产物命名：mova_<平台>_<架构>
-#   Windows : mova_win_x64
-#   macOS   : mova_mac_arm64      （Apple Silicon；Intel Mac 见文末说明）
+#   Windows : mova_win_x64          便携版（zip，解压即用，不写注册表）
+#             mova_win_x64_setup    安装程序（Inno Setup 编译出的 exe）
+#   macOS   : mova_mac_arm64        .app（zip / tar.gz）
+#             mova_mac_arm64.dmg    DMG（打开后拖进 Applications）
 #
+# 两个平台都同时给「便携版」和「安装包」：便携版不写注册表、不留痕迹，
+# 安装包则在系统里挂号——开始菜单快捷方式 + Windows「应用和功能」里的
+# 卸载项（unins000.exe）。
+#
+# 打包脚本在 installers/ 下，可以脱离 CI 单独跑：
+#   iscc installers\windows\mova.iss /DMyAppVersion=1.2.3
+#   bash installers/macos/make_dmg.sh
+#
+# ---------------------------------------------------------------------------
+# 关于签名公证（没做，以及会有什么后果）
+#
+# 目前**没有**做代码签名与公证，因为只给自己用，不值得为此买证书：
+#   - Windows：首次安装会弹 SmartScreen「Windows 已保护你的电脑」，
+#     点「更多信息 → 仍要运行」即可，同一个安装包只会问一次。
+#   - macOS：首次打开会被 Gatekeeper 挡住，需要右键 → 打开放行一次，
+#     之后系统就记住了。
+#
+# 哪天要给外人用，这两处就是必须补的（都要花钱）：
+#   - Windows：OV/EV 代码签名证书 + signtool，加到 iscc 之后。
+#   - macOS：Apple Developer 账号（¥688/年）→ Developer ID 签名
+#     → notarytool 公证 → stapler 钉票。make_dmg.sh 的注释里有现成命令。
 # ---------------------------------------------------------------------------
 # 关于「压缩包套压缩包」（重要）
 #
@@ -147,12 +170,62 @@ jobs:
           Compress-Archive -Path "$env:PROJECT_DIR/build/windows/x64/runner/Release/*" `
             -DestinationPath "$env:PROJECT_DIR/dist/$env:WIN_ASSET.zip" -Force
 
+      # 安装程序的版本号从 pubspec 取，避免「exe 里是 1.0.0、安装包写着
+      # 别的版本」这种三处不一致。
+      - name: 取版本号
+        id: ver
+        shell: bash
+        run: |
+          v=$(sed -n 's/^version: *//p' pubspec.yaml | head -1 | sed 's/+.*//')
+          echo "app_version=$v" >> "$GITHUB_OUTPUT"
+        working-directory: ${{ steps.locate.outputs.dir }}
+
+      # windows-latest 预装了 Inno Setup，但 iscc 不一定在 PATH 里，先探一下。
+      - name: 定位 Inno Setup
+        id: iscc
+        shell: pwsh
+        run: |
+          $found = Get-Command iscc -ErrorAction SilentlyContinue
+          if ($found) {
+            $path = $found.Source
+          } else {
+            $path = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $path)) {
+            Write-Error "这台 runner 上没有 Inno Setup（PATH 与默认安装位置都找过）"
+            exit 1
+          }
+          Write-Host "使用: $path"
+          "path=$path" >> $env:GITHUB_OUTPUT
+
+      # 生成安装程序：装进 Program Files、建开始菜单快捷方式、在
+      # 「设置 → 应用和功能」里注册卸载项。脚本里的相对路径是相对脚本
+      # 自身位置解析的，所以这里传绝对路径即可。
+      - name: 生成 Windows 安装程序
+        shell: pwsh
+        env:
+          PROJECT_DIR: ${{ steps.locate.outputs.dir }}
+        run: |
+          & "${{ steps.iscc.outputs.path }}" `
+            "$env:PROJECT_DIR\installers\windows\mova.iss" `
+            "/DMyAppVersion=${{ steps.ver.outputs.app_version }}" `
+            "/DMyOutputBaseFilename=mova_win_x64_setup"
+        working-directory: ${{ steps.locate.outputs.dir }}
+
       # 直接上传目录 -> artifact 的 zip 就是唯一一层，解压即用，不再套娃。
-      - name: 上传产物
+      - name: 上传便携版产物
         uses: actions/upload-artifact@v6
         with:
           name: ${{ env.WIN_ASSET }}
           path: ${{ steps.locate.outputs.dir }}/build/windows/x64/runner/Release
+
+      # 安装程序是单个 exe，artifact 会再套一层 zip（GitHub 限制，无法关闭）。
+      # 下载后解压出 mova_win_x64_setup.exe 双击即可，多一步解压而已。
+      - name: 上传安装程序
+        uses: actions/upload-artifact@v6
+        with:
+          name: mova_win_x64_setup
+          path: ${{ steps.locate.outputs.dir }}/dist/mova_win_x64_setup.exe
 
       - name: 发布到 GitHub Releases
         if: startsWith(github.ref, 'refs/tags/v')
@@ -160,7 +233,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: ${{ steps.locate.outputs.dir }}/dist/${{ env.WIN_ASSET }}.zip
+          files: |
+            ${{ steps.locate.outputs.dir }}/dist/${{ env.WIN_ASSET }}.zip
+            ${{ steps.locate.outputs.dir }}/dist/mova_win_x64_setup.exe
 
   # ---------------- macOS ----------------
   build-macos:
@@ -210,11 +285,22 @@ jobs:
           # --keepParent 保证解压后是 mova.app 而不是散落的文件。
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/$MAC_ASSET.zip"
 
+          # DMG：macOS 分发桌面应用的常规形式——打开后把 mova.app 拖到
+          # 镜像里的 Applications 就装好了。脚本自己读 pubspec 的版本号。
+          # 用 bash 调用（而不是依赖可执行位），免得 git 把 +x 丢了。
+          bash installers/macos/make_dmg.sh
+
       - name: 上传产物
         uses: actions/upload-artifact@v6
         with:
           name: ${{ env.MAC_ASSET }}
           path: ${{ steps.locate.outputs.dir }}/dist/${{ env.MAC_ASSET }}.tar.gz
+
+      - name: 上传 DMG
+        uses: actions/upload-artifact@v6
+        with:
+          name: mova_mac_arm64_dmg
+          path: ${{ steps.locate.outputs.dir }}/dist/${{ env.MAC_ASSET }}.dmg
 
       - name: 发布到 GitHub Releases
         if: startsWith(github.ref, 'refs/tags/v')
@@ -222,7 +308,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: ${{ steps.locate.outputs.dir }}/dist/${{ env.MAC_ASSET }}.zip
+          files: |
+            ${{ steps.locate.outputs.dir }}/dist/${{ env.MAC_ASSET }}.zip
+            ${{ steps.locate.outputs.dir }}/dist/${{ env.MAC_ASSET }}.dmg
 
 # ---------------------------------------------------------------------------
 # 附：如果要出 Intel Mac 的包

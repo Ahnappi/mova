@@ -183,6 +183,9 @@ class _FakeTransferRepository implements TransferRepository {
   List<TransferTask> get currentTasks => const <TransferTask>[];
 
   @override
+  String get sessionId => '';
+
+  @override
   Future<Result<void>> sendFiles(List<PickedFile> files) async => Result.ok(null);
 
   @override
@@ -213,7 +216,17 @@ class _FakeTransferRepository implements TransferRepository {
       Result.ok(null);
 
   @override
+  Future<Result<int>> acceptMany(
+    Iterable<int> fileIds, {
+    String? saveDirectory,
+  }) async =>
+      Result.ok(fileIds.length);
+
+  @override
   Future<void> reject(int fileId) async {}
+
+  @override
+  Future<void> rejectMany(Iterable<int> fileIds) async {}
 
   @override
   Future<void> cancel(int fileId) async {}

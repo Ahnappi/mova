@@ -6,6 +6,7 @@ import '../../../domain/models/settings/app_settings.dart';
 import '../../theme/app_motion_widgets.dart';
 import '../../theme/app_theme.dart';
 import '../view_models/settings_view_model.dart';
+import '../view_models/update_view_model.dart';
 
 /// 打开「设置」弹窗（缩放 0.96→1 进场，与「数据存放位置」一致）。
 Future<void> showSettingsDialog(BuildContext context) {
@@ -116,6 +117,8 @@ class SettingsDialog extends StatelessWidget {
                         _RetentionSection(vm: vm),
                         const Divider(height: 32),
                         _ConfirmSendSection(vm: vm),
+                        const Divider(height: 32),
+                        const _VersionSection(),
                         const SizedBox(height: 8),
                       ],
                     ),
@@ -368,6 +371,199 @@ class _ConfirmSendSection extends StatelessWidget {
       value: vm.confirmBeforeSend,
       activeThumbColor: AppColors.primary,
       onChanged: (value) => vm.setConfirmBeforeSend(value),
+    );
+  }
+}
+
+/// 版本与更新：显示当前版本，手动检查一次。
+///
+/// 检查是**手动**的：这是个纯局域网工具类应用，
+/// 悄悄在后台打一个外网请求，比少一次自动提醒难受得多。
+class _VersionSection extends StatelessWidget {
+  const _VersionSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final vm = context.watch<UpdateViewModel>();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionTitle(title: '版本与更新'),
+        const SizedBox(height: 6),
+        Text(
+          '当前版本 ${vm.versionLabel}',
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            PressableScale(
+              onTap: vm.isChecking ? null : () => vm.check(),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                decoration: BoxDecoration(
+                  color: vm.isChecking ? AppColors.border : AppColors.primary,
+                  borderRadius: BorderRadius.circular(AppDimens.radiusPill),
+                ),
+                child: Text(
+                  vm.isChecking ? '正在检查…' : '检查更新',
+                  style: TextStyle(
+                    color: vm.isChecking
+                        ? AppColors.textSecondary
+                        : Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        if (vm.status != UpdateCheckStatus.idle &&
+            vm.status != UpdateCheckStatus.checking) ...[
+          const SizedBox(height: 12),
+          _UpdateResult(vm: vm),
+        ],
+      ],
+    );
+  }
+}
+
+/// 检查结果的展示：已是最新 / 有新版本（附下载入口）/ 没查成。
+class _UpdateResult extends StatelessWidget {
+  const _UpdateResult({required this.vm});
+
+  final UpdateViewModel vm;
+
+  @override
+  Widget build(BuildContext context) {
+    return switch (vm.status) {
+      UpdateCheckStatus.upToDate => _UpdateBanner(
+          color: AppColors.success,
+          icon: Icons.check_circle_outline,
+          text: '已经是最新版本',
+        ),
+      UpdateCheckStatus.failed => _UpdateBanner(
+          color: AppColors.danger,
+          icon: Icons.error_outline_rounded,
+          // 失败就是失败：不能说成「已是最新」，
+          // 否则用户在没网的时候永远也不会去升级。
+          text: '没查到更新：${vm.detail ?? '未知原因'}',
+        ),
+      UpdateCheckStatus.available => _UpdateAvailable(vm: vm),
+      _ => const SizedBox.shrink(),
+    };
+  }
+}
+
+class _UpdateAvailable extends StatelessWidget {
+  const _UpdateAvailable({required this.vm});
+
+  final UpdateViewModel vm;
+
+  @override
+  Widget build(BuildContext context) {
+    final update = vm.update;
+    if (update == null) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.primary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '发现新版本 ${update.versionName}（${update.versionCode}）',
+            style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700),
+          ),
+          if (update.notes.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              update.notes,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12.5,
+                height: 1.5,
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          PressableScale(
+            onTap: () => vm.openDownloadPage(),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.primary,
+                borderRadius: BorderRadius.circular(AppDimens.radiusPill),
+              ),
+              child: const Text(
+                '打开下载页',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+          // 地址缺失（已退回发布页）或浏览器没打开时，提示留在 downloadHint 里：
+          // 用户至少能看到发生了什么，还能手动复制地址，
+          // 而不是对着一个点了没反应的按钮发愣。
+          if (vm.downloadHint != null) ...[
+            const SizedBox(height: 8),
+            SelectableText(
+              vm.downloadHint!,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _UpdateBanner extends StatelessWidget {
+  const _UpdateBanner({
+    required this.color,
+    required this.icon,
+    required this.text,
+  });
+
+  final Color color;
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 15, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(color: color, fontSize: 12.5),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

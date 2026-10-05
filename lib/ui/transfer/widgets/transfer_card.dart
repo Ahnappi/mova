@@ -125,9 +125,16 @@ class TransferCard extends StatelessWidget {
                       ),
                       const Spacer(),
                       Text(
-                        task.status == TransferStatus.transferring
-                            ? formatSpeed(task.speedBytesPerSecond)
-                            : task.status == TransferStatus.confirming
+                        // 接收端「已同意、但一个字节都还没到」：多半是在等
+                        // 对端腾出并发名额（最多同时传 3 个）。写清楚，
+                        // 免得用户以为卡住了。
+                        task.status == TransferStatus.transferring &&
+                                _isOffer &&
+                                task.transferredBytes == 0
+                            ? '已同意，等对方轮到这个文件…'
+                            : task.status == TransferStatus.transferring
+                                ? formatSpeed(task.speedBytesPerSecond)
+                                : task.status == TransferStatus.confirming
                                 ? '等待对方核对…'
                                 : task.status == TransferStatus.queued
                                     ? '排队中，前面的文件传完就开始…'

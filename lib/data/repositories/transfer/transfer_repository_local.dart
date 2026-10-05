@@ -72,10 +72,12 @@ class TransferRepositoryLocal implements TransferRepository {
     Duration? offerTimeout,
     Duration? stallTimeout,
     Duration? ackTimeout,
+    Duration? probeDelay,
   })  : _writer = writer ?? IncomingFileWriter(),
         _offerTimeout = offerTimeout ?? AppConfig.offerResponseTimeout,
         _stallTimeout = stallTimeout ?? AppConfig.transferStallTimeout,
-        _ackTimeout = ackTimeout ?? AppConfig.transferAckTimeout {
+        _ackTimeout = ackTimeout ?? AppConfig.transferAckTimeout,
+        _probeDelay = probeDelay ?? AppConfig.backpressureProbeDelay {
     _eventSub = _transport.transferEvents.listen(
       _onEvent,
       onError: (Object error) => _log.warning('传输事件异常：$error'),
@@ -91,6 +93,9 @@ class TransferRepositoryLocal implements TransferRepository {
     // 看护计时器：统一处理「等对端应答」「传输停滞」「等回执」三类超时。
     _watchdog = Timer.periodic(const Duration(seconds: 1), (_) => _checkTimeouts());
   }
+
+  @override
+  String get sessionId => _sessionId;
 
   /// 后台写盘失败：立刻终结这个任务，并解除可能的背压暂停
   /// （否则 socket 会一直停读，后续什么也收不到）。
@@ -112,7 +117,17 @@ class TransferRepositoryLocal implements TransferRepository {
 
   final Duration _offerTimeout;
   final Duration _stallTimeout;
+
+  /// 接收侧「等待用户决定」的宽限时间，叠在 [_offerTimeout] 之上。
+  ///
+  /// 发送端会在 [_offerTimeout] 后放弃，但它发出的取消帧不一定到得了
+  /// （连接可能已经断了）。多给这一段，既能兜住丢帧的情况，又不至于
+  /// 让用户拖太久还没决定时把卡片永久挂着。
+  static const Duration _offerGracePeriod = Duration(seconds: 30);
   final Duration _ackTimeout;
+
+  /// 背压暂停期间多久「松开一次」读 socket（可被测试注入，见构造函数）。
+  final Duration _probeDelay;
 
   final Map<int, TransferTask> _tasks = <int, TransferTask>{};
   final Map<int, _IncomingState> _incoming = <int, _IncomingState>{};
@@ -128,7 +143,6 @@ class TransferRepositoryLocal implements TransferRepository {
   int _prepareToken = 0;
 
   final Map<int, _SpeedState> _speedStates = <int, _SpeedState>{};
-  final Map<int, Completer<void>> _finishWaiters = <int, Completer<void>>{};
   final Map<int, Completer<void>> _ackWaiters = <int, Completer<void>>{};
   final Map<int, DateTime> _waitingSince = <int, DateTime>{};
   final Map<int, DateTime> _lastProgressAt = <int, DateTime>{};
@@ -137,8 +151,39 @@ class TransferRepositoryLocal implements TransferRepository {
   final List<_QueuedSend> _queue = <_QueuedSend>[];
   bool _pumping = false;
 
+  /// 已收到对端同意、等待推流的任务 id（先进先出）。
+  ///
+  /// 与 [_queue] 是两回事：[_queue] 里的还没向对端发过请求，
+  /// 这里的已经拿到对方同意，只是在等前面的文件让出并发名额。
+  final List<int> _readyQueue = <int>[];
+
+  /// 正在推流的任务 id，用来卡并发上限。
+  final Set<int> _sending = <int>{};
+
+  /// 已答复「同意」、但还没等到第一块数据的**接收端**任务。
+  ///
+  /// 发送端最多同时推 [AppConfig.maxConcurrentTransfers] 个文件，
+  /// 一次收 10 个大文件时，后面几个只是正常排队，可能几十分钟都收不到
+  /// 一个字节。若在答复同意那一刻就开始算「传输停滞」，它们会在轮到
+  /// 自己之前就被判失败——明明一切正常，只是前面还有人在传。
+  ///
+  /// 所以停滞看护跳过这些任务，等第一块数据到了（见 [_onChunk]）才开始
+  /// 计时。连接真出问题由断连与心跳负责，不会因此永久挂着。
+  final Set<int> _awaitingFirstChunk = <int>{};
+
+  int _batchCounter = 0;
+
+  /// 新的批次号：同一次批量发送的文件共用，接收端据此聚成一组。
+  int _newBatchId() => ++_batchCounter;
+
   /// 是否已暂停读取 socket（接收端背压）。
   bool _paused = false;
+
+  /// 最近一次收到对端数据块的时间。
+  ///
+  /// 只用于「背压呼吸」（见 [_checkTimeouts]）：暂停读 socket 时没有新的
+  /// 数据块进来，只能靠这个时间戳判断「已经多久没动静了」。
+  DateTime? _lastInboundAt;
 
   /// 当前会话标识；换设备连接时会整体重置。
   String _sessionId = '';
@@ -165,6 +210,10 @@ class TransferRepositoryLocal implements TransferRepository {
   Future<Result<void>> sendFiles(List<PickedFile> files) async {
     if (files.isEmpty) return Result.ok(null);
 
+    // 这一批共用一个批次号：接收端据此把它们聚成一组一起展示，
+    // 用户一次就能决定收哪些、不收哪些。
+    final batchId = _newBatchId();
+    var batchIndex = 0;
     for (final file in files) {
       final id = _newId();
       _tasks[id] = TransferTask(
@@ -178,8 +227,17 @@ class TransferRepositoryLocal implements TransferRepository {
         createdAt: DateTime.now(),
         localPath: file.path,
         sessionId: _sessionId,
+        batchId: batchId,
       );
-      _queue.add(_QueuedSend(id: id, file: file));
+      _queue.add(
+        _QueuedSend(
+          id: id,
+          file: file,
+          batchId: batchId,
+          batchIndex: batchIndex++,
+          batchCount: files.length,
+        ),
+      );
     }
     _emit(force: true);
     unawaited(_pumpQueue());
@@ -249,10 +307,15 @@ class TransferRepositoryLocal implements TransferRepository {
       localPath: path,
       sessionId: _sessionId,
     );
+    // 重发是单独一批：它就一个文件，但仍走同一套批次协议，
+    // 对端展示逻辑不用为「有没有批次」分岔。
     _queue.add(
       _QueuedSend(
         id: id,
         file: PickedFile(path: path, name: p.basename(task.fileName), size: info.sizeBytes),
+        batchId: _newBatchId(),
+        batchIndex: 0,
+        batchCount: 1,
       ),
     );
     _emit(force: true);
@@ -285,19 +348,55 @@ class TransferRepositoryLocal implements TransferRepository {
           fileId: item.id,
           name: item.file.name,
           size: item.file.size,
+          batchId: item.batchId,
+          batchIndex: item.batchIndex,
+          batchCount: item.batchCount,
         );
         if (offer is Error<void>) {
           _finish(item.id, TransferStatus.failed, error: offer.error.toString());
           continue;
         }
 
-        // 这里不再加超时：超时由 _checkTimeouts 按「等待应答 / 传输停滞」
+        // 这里**不等待任务终结**。
+        //
+        // 以前是「发一个、等一个」：发出请求就 await 到这个文件彻底传完
+        // （或失败），才轮到下一个。那样接收端一次只能看到一个文件，
+        // 批量发送时用户得逐个点，最坏要 N×120 秒才把询价阶段走完。
+        //
+        // 现在一次把整批的请求都发出去，接收端能一次看到全部并统一决定。
+        // 并发上限不在这里卡——它管的是**同时在传几个**，见 [_pumpSending]。
+        //
+        // 这里也不再加超时：超时由 _checkTimeouts 按「等待应答 / 传输停滞」
         // 分别判断。早先在这里统一加 120 秒，导致正常传输大文件超过两分钟
         // 也会被判成「对方未响应」。
-        await _waitForFinish(item.id);
       }
     } finally {
       _pumping = false;
+    }
+  }
+
+  /// 按并发上限启动推流：同一时刻最多 [AppConfig.maxConcurrentTransfers] 个。
+  ///
+  /// 为什么上限只管推流、不管发请求：请求（offer）只是几十字节的询价，
+  /// 一次性全发才能让接收端看到完整的一批。真正吃资源的是推流——
+  /// 每个文件各自的读缓冲与未 flush 积压，N 路就是 N 倍内存。
+  void _pumpSending() {
+    while (_sending.length < AppConfig.maxConcurrentTransfers &&
+        _readyQueue.isNotEmpty) {
+      final id = _readyQueue.removeAt(0);
+      final task = _tasks[id];
+      // 排队等推流这段时间里，任务可能已被取消、已判失败，或会话已换人。
+      if (task == null || !task.isActive) continue;
+      if (task.status != TransferStatus.waiting) continue;
+
+      _sending.add(id);
+      unawaited(
+        _startSending(id).whenComplete(() {
+          _sending.remove(id);
+          // 空出一个位置：把后面排着的补上来。
+          _pumpSending();
+        }),
+      );
     }
   }
 
@@ -312,15 +411,6 @@ class TransferRepositoryLocal implements TransferRepository {
     if (task.status != TransferStatus.waiting) return false;
     if (task.sessionId != _sessionId) return false;
     return !task.isFinished;
-  }
-
-  /// 等待某个发送任务终结。
-  ///
-  /// 队列靠它串行；真正让它结束的是任务终结（成功/失败/取消/回执）或看护计时器。
-  Future<void> _waitForFinish(int id) {
-    final completer = Completer<void>();
-    _finishWaiters[id] = completer;
-    return completer.future;
   }
 
   /// 对端同意后，真正开始推流；推完还要等对端回执。
@@ -463,6 +553,61 @@ class TransferRepositoryLocal implements TransferRepository {
 
   // ---------- 接收 ----------
 
+  /// 取出一个「现在可以同意接收」的任务；已经失效时返回 null。
+  ///
+  /// 四个条件缺一不可：任务还在、是接收方向、仍停在等待决定的状态、
+  /// 且属于当前会话（上一次连接留下的请求不能收）。
+  TransferTask? _acceptableTask(int fileId) {
+    final task = _tasks[fileId];
+    if (task == null ||
+        task.direction != TransferDirection.receiving ||
+        task.status != TransferStatus.waiting ||
+        task.sessionId != _sessionId) {
+      return null;
+    }
+    return task;
+  }
+
+  /// 确定保存目录，并把「这个目录能不能用」一次性检查完。
+  ///
+  /// 批量接收时这一整段只跑一次：建目录、探测写权限、确认支持原子提交
+  /// 都是实打实的 IO，每个文件各来一遍纯属浪费。
+  Future<Result<String>> _resolveSaveDirectory(String? saveDirectory) async {
+    final directory = saveDirectory ?? await _storage.currentSaveDirectory();
+
+    // 目录可能已被移动或删除，先补建一次。
+    try {
+      await _storage.ensureDirectory(directory);
+    } catch (e) {
+      return Result.error(Exception('无法创建保存目录 $directory：$e'));
+    }
+
+    // 先确认写得进去：macOS 对桌面/文档/下载有系统权限保护（即使没有沙箱），
+    // 被拒绝时只有在真正落盘那一刻才报错。提前探测可以把问题挡在传输之前，
+    // 免得几 GB 的文件传完了才说写不进去。
+    if (!await _storage.isWritableDirectory(directory)) {
+      return Result.error(
+        Exception(
+          '没有写入「$directory」的权限，请在系统'
+          '「隐私与安全性 → 文件与文件夹」中允许 mova，或换一个保存位置。',
+        ),
+      );
+    }
+
+    // 提交方式要**提前**确认：等到几个 GB 都传完了才发现这个目录不支持
+    // 「不覆盖的原子提交」（exFAT/FAT 等文件系统不支持硬链接），
+    // 那才是真的浪费。早失败、早换目录。
+    if (!await _storage.supportsAtomicCommit(directory)) {
+      return Result.error(
+        Exception(
+          '「$directory」不支持安全的原子保存（该文件系统可能不支持硬链接，'
+          '例如 exFAT/FAT），请换一个保存位置后重新接收。',
+        ),
+      );
+    }
+    return Result.ok(directory);
+  }
+
   /// 同意接收一个文件：选目录 → 探测权限 → 建临时文件 → 通知对端开始。
   ///
   /// 中间每一步都是 await，期间对端可能取消、连接可能断开、用户可能
@@ -476,42 +621,117 @@ class TransferRepositoryLocal implements TransferRepository {
   ///    避免取消后留下一个永远不会有人接手的 `.mova-part`。
   @override
   Future<Result<void>> accept(int fileId, {String? saveDirectory}) async {
-    final task = _tasks[fileId];
-    if (task == null ||
-        task.direction != TransferDirection.receiving ||
-        task.status != TransferStatus.waiting ||
-        task.sessionId != _sessionId) {
+    return _prepareAndAccept(fileId, _sessionId, saveDirectory: saveDirectory);
+  }
+
+  @override
+  Future<Result<int>> acceptMany(
+    Iterable<int> fileIds, {
+    String? saveDirectory,
+  }) async {
+    // 会话身份必须在**第一个 await 之前**钉死。
+    //
+    // 目录检查是好几轮真实 IO，期间完全可能断连并连上另一台设备。
+    // 若等检查完再取会话，拿到的就已经是新会话了——后面那句
+    //「会话没变就继续」会永远成立，旧请求于是被当成新会话的请求处理。
+    final session = _sessionId;
+    final ids = <int>[
+      for (final id in fileIds)
+        if (_acceptableTask(id) != null) id,
+    ];
+    if (ids.isEmpty) {
+      return Result.error(Exception('这些接收请求都已经失效了'));
+    }
+
+    // 目录只解析一次：后面所有文件共用。
+    final directory = await _resolveSaveDirectory(saveDirectory);
+    final String dir;
+    switch (directory) {
+      case Error<String>():
+        return Result.error(directory.error);
+      case Ok<String>():
+        dir = directory.value;
+    }
+
+    Error<void>? firstError;
+    var processed = 0;
+    for (final id in ids) {
+      if (_sessionId != session) break;
+      // 逐个重新校验：目录检查、以及前一个文件的准备都是 await，
+      // 期间用户可能取消了后面的、连接也可能断了。开头那一份「可以接收」
+      // 的结论在这时已经过期，直接拿去准备会把已取消的任务重新拉回
+      // preparing，随后又收到一份没人要的数据。
+      final result = await _prepareAndAccept(
+        id,
+        session,
+        resolvedDirectory: dir,
+      );
+      switch (result) {
+        case Error<void>():
+          // 不中断：已经同意的那几个照样生效，只把第一个错误带回去。
+          firstError ??= result;
+        case Ok<void>():
+          processed++;
+      }
+    }
+
+    // 一个都没接成时不能报成功：界面会照着「已接收 N 个」去提示，
+    // 而事实是零个。会话被换掉属于这一类——旧请求随上一通会话一起
+    // 作废了，说「成功」比说「失败」更糟。
+    if (processed == 0) {
+      return Result.error(
+        firstError?.error ?? Exception('设备连接已切换，本次接收已取消'),
+      );
+    }
+    // 部分成功也如实报数量：已同意的那些仍然生效，
+    // 调用方按实际数量给用户反馈，而不是按请求数量。
+    return Result.ok(processed);
+  }
+
+  /// 为单个文件建好临时文件并答复「同意」。
+  ///
+  /// [resolvedDirectory] 非空时直接用它（批量接收已经检查过一遍了），
+  /// 否则按 [saveDirectory] 现解析并做完整检查。
+  Future<Result<void>> _prepareAndAccept(
+    int fileId,
+    String session, {
+    String? resolvedDirectory,
+    String? saveDirectory,
+  }) async {
+    // 入口就重新取一次任务：调用方手上的快照可能是若干次 await 之前
+    // 拿到的（批量接收尤其如此），此刻它可能已被用户取消、已被看护判失败，
+    // 或者会话已经换人。少了这一步，已失效的请求会被改成 preparing
+    // 并答复「同意」，于是又收到一份没人要的数据。
+    final task = _acceptableTask(fileId);
+    if (task == null || task.sessionId != session) {
       return Result.error(Exception('该接收请求已失效'));
     }
 
-    final session = _sessionId;
     final token = ++_prepareToken;
     final prepare = _PrepareState(token);
     _preparing[fileId] = prepare;
     // 必须放在第一个 await **之前**：否则重复点击会在准备还在进行时
     // 再次进入，为同一个 fileId 打开第二个临时文件、覆盖掉前一个句柄。
+    // 目录解析也是 await，所以连它都得排在这句之后。
     _update(fileId, status: TransferStatus.preparing);
 
     try {
-      final directory = saveDirectory ?? await _storage.currentSaveDirectory();
-      if (!_isPrepareAlive(fileId, token, session)) return _prepareAborted();
-
-      // 目录可能已被移动或删除，先补建一次。
-      try {
-        await _storage.ensureDirectory(directory);
-      } catch (e) {
-        final message = '无法创建保存目录 $directory：$e';
-        return _failPrepare(fileId, token, session, message);
-      }
-      if (!_isPrepareAlive(fileId, token, session)) return _prepareAborted();
-
-      // 先确认写得进去：macOS 对桌面/文档/下载有系统权限保护（即使没有沙箱），
-      // 被拒绝时只有在真正落盘那一刻才报错。提前探测可以把问题挡在传输之前，
-      // 免得几 GB 的文件传完了才说写不进去。
-      if (!await _storage.isWritableDirectory(directory)) {
-        final hint = '没有写入「$directory」的权限，请在系统'
-            '「隐私与安全性 → 文件与文件夹」中允许 mova，或换一个保存位置。';
-        return _failPrepare(fileId, token, session, hint);
+      final String directory;
+      if (resolvedDirectory != null) {
+        directory = resolvedDirectory;
+      } else {
+        final resolved = await _resolveSaveDirectory(saveDirectory);
+        switch (resolved) {
+          case Error<String>():
+            return _failPrepare(
+              fileId,
+              token,
+              session,
+              resolved.error.toString(),
+            );
+          case Ok<String>():
+            directory = resolved.value;
+        }
       }
       if (!_isPrepareAlive(fileId, token, session)) return _prepareAborted();
 
@@ -546,25 +766,13 @@ class TransferRepositoryLocal implements TransferRepository {
         );
       }
 
-      // 提交方式要**提前**确认：等到几个 GB 都传完了才发现这个目录不支持
-      // 「不覆盖的原子提交」（exFAT/FAT 等文件系统不支持硬链接），
-      // 那才是真的浪费。早失败、早换目录。
-      if (!await _storage.supportsAtomicCommit(directory)) {
-        return _failPrepare(
-          fileId,
-          token,
-          session,
-          '「$directory」不支持安全的原子保存（该文件系统可能不支持硬链接，'
-          '例如 exFAT/FAT），请换一个保存位置后重新接收。',
-        );
-      }
-      if (!_isPrepareAlive(fileId, token, session)) return _prepareAborted();
-
       // 最后一次核对：准备期间完全可能被取消、断连或切换会话。
       if (!_isPrepareAlive(fileId, token, session)) return _prepareAborted();
 
       _preparing.remove(fileId);
       _incoming[fileId] = _IncomingState(finalPath: target, tempPath: temp);
+      // 停滞计时从收到第一块数据才开始：见 [_awaitingFirstChunk]。
+      _awaitingFirstChunk.add(fileId);
       _lastProgressAt[fileId] = DateTime.now();
 
       _update(
@@ -644,6 +852,13 @@ class TransferRepositoryLocal implements TransferRepository {
     if (task == null || task.direction != TransferDirection.receiving) return;
     _transport.sendFileReject(fileId);
     _finish(fileId, TransferStatus.rejected);
+  }
+
+  @override
+  Future<void> rejectMany(Iterable<int> fileIds) async {
+    for (final id in fileIds) {
+      await reject(id);
+    }
   }
 
   // ---------- 取消 ----------
@@ -736,6 +951,11 @@ class TransferRepositoryLocal implements TransferRepository {
           status: TransferStatus.waiting,
           createdAt: DateTime.now(),
           sessionId: _sessionId,
+          // 带上批次信息：同一批发来的文件共享 batchId，界面据此把它们
+          // 聚成一组，让用户一次决定收哪些。
+          batchId: event.batchId,
+          batchIndex: event.batchIndex,
+          batchCount: event.batchCount,
         );
         _emit(force: true);
       case AcceptReceived():
@@ -766,7 +986,14 @@ class TransferRepositoryLocal implements TransferRepository {
       _transport.sendFileCancel(fileId, reason: '该发送请求已失效');
       return;
     }
-    unawaited(_startSending(fileId));
+    // 已经拿到答复，不再受「等对端响应」的计时器管。
+    //
+    // 这一步很关键：批量发送时接收端可能一次同意好几个，多数要排队等
+    // 并发名额。它们仍然是 waiting 状态，若不清掉计时起点，看护会把它
+    // 们判成「对方没有响应」——明明对方已经同意了。
+    _waitingSince.remove(fileId);
+    _readyQueue.add(fileId);
+    _pumpSending();
   }
 
   /// 来自上一次会话的迟到事件：连接已经换人了，不能再改当前的任务。
@@ -782,7 +1009,12 @@ class TransferRepositoryLocal implements TransferRepository {
     // 已终结的任务还可能收到对端在途中发来的残留数据块，直接丢弃。
     if (task.isFinished) return;
 
+    // 第一块数据到了：从现在起才算是「真正在传」，停滞看护开始计时
+    // （此前只是排在对端后面等名额，见 [_awaitingFirstChunk]）。
+    _awaitingFirstChunk.remove(fileId);
+
     // 交给后台 isolate 写盘：这里只登记字节数，不做阻塞式 I/O。
+    _lastInboundAt = DateTime.now();
     final bytes = data is Uint8List ? data : Uint8List.fromList(data);
     _writer.write(fileId, bytes);
     state.receivedBytes += bytes.length;
@@ -1058,7 +1290,14 @@ class TransferRepositoryLocal implements TransferRepository {
       _onSessionStarted();
       return;
     }
-    // 连接断了：所有进行中的任务标记失败，并把队列清空。
+    // 连接断了：会话标识必须跟着作废。
+    //
+    // 留着旧值的话，「会话没变」这个判据会一路成立：断开后仍在跑的
+    // 批量接收会继续答复「同意」，界面也以为这批请求还算数——
+    // 实际上那条连接上早就没有人在等回复了。
+    _sessionId = _transport.sessionId ?? '';
+
+    // 所有进行中的任务标记失败，并把队列清空。
     for (final id in _tasks.keys.toList()) {
       final task = _tasks[id];
       if (task == null || !task.isActive) continue;
@@ -1070,7 +1309,23 @@ class TransferRepositoryLocal implements TransferRepository {
       _finish(id, TransferStatus.failed, error: '连接已断开');
     }
     _queue.clear();
+    // 已同意但还没轮到推流的、以及正在推流的，一律作废：
+    // 连接都没了，留着只会让它们卡在 waiting 里等一个永远不会到的名额。
+    _readyQueue.clear();
+    _sending.clear();
+    _releaseBackpressure();
+    _lastInboundAt = null;
+  }
+
+  /// 松开被背压暂停的读 socket，并把标记复位。
+  ///
+  /// 光把 `_paused` 置 false 是不够的：socket 的订阅还停在暂停状态，
+  /// 之后即便又连上、又有数据进来，也一个字节都读不到。断链和换会话
+  /// 这两处都必须真的调用一次 resume。
+  void _releaseBackpressure() {
+    if (!_paused) return;
     _paused = false;
+    _transport.resumeInbound();
   }
 
   /// 换会话（换设备连接）时重置：任务、收发状态、队列全部清空。
@@ -1080,14 +1335,10 @@ class TransferRepositoryLocal implements TransferRepository {
   void _onSessionStarted() {
     _sessionId = _transport.sessionId ?? '';
 
-    // 未完成的等待要叫醒，否则发送队列会永久卡在旧任务上。
-    for (final waiter in _finishWaiters.values) {
-      if (!waiter.isCompleted) waiter.complete();
-    }
+    // 未完成的回执等待要叫醒，否则发送流程会永久卡在旧任务上。
     for (final waiter in _ackWaiters.values) {
       if (!waiter.isCompleted) waiter.complete();
     }
-    _finishWaiters.clear();
     _ackWaiters.clear();
 
     // 换会话后，还在跑的 accept 会因为「会话变了」自行放弃并清理临时文件，
@@ -1107,7 +1358,11 @@ class TransferRepositoryLocal implements TransferRepository {
     _lastProgressAt.clear();
     _cancelRequests.clear();
     _queue.clear();
-    _paused = false;
+    _readyQueue.clear();
+    _sending.clear();
+    _awaitingFirstChunk.clear();
+    _releaseBackpressure();
+    _lastInboundAt = null;
     _emit(force: true);
   }
 
@@ -1126,6 +1381,21 @@ class TransferRepositoryLocal implements TransferRepository {
   void _checkTimeouts() {
     final now = DateTime.now();
 
+    // 背压呼吸：暂停读 socket 期间，Dart **按设计**不会投递「连接已关闭」
+    // 事件——传大文件时几乎必然处于暂停态，于是对端断线我们根本收不到
+    // 通知，只能干等停滞超时（默认 90 秒）那一下。
+    //
+    // 这里在「已经很久没收到数据」时松开一次：socket 会趁这个窗口把积压
+    // 数据和 EOF / 错误交上来；真有数据进来，_onChunk 会立刻重新压住。
+    // 松开的代价是内存可能短暂冲高，换来的是断链几秒内就能被发现。
+    if (_paused) {
+      final last = _lastInboundAt;
+      if (last != null && now.difference(last) >= _probeDelay) {
+        _paused = false;
+        _transport.resumeInbound();
+      }
+    }
+
     for (final task in _tasks.values.toList()) {
       if (!task.isActive) continue;
 
@@ -1137,23 +1407,45 @@ class TransferRepositoryLocal implements TransferRepository {
       if (task.status == TransferStatus.preparing) continue;
 
       if (task.status == TransferStatus.waiting) {
-        if (task.direction != TransferDirection.sending) continue;
-        // 没有 _waitingSince 就说明请求还没发出去，同样不计时。
-        final since = _waitingSince[task.id];
-        if (since == null) continue;
-        if (now.difference(since) < _offerTimeout) continue;
-        // 请求已经发给对端了，超时后必须通知它撤掉：
-        // 否则对端过了很久点「接收」，我们这边还会真的开始推流。
-        _transport.sendFileCancel(task.id, reason: '发送请求已超时');
+        if (task.direction == TransferDirection.sending) {
+          // 没有 _waitingSince 就说明请求还没发出去，同样不计时。
+          final since = _waitingSince[task.id];
+          if (since == null) continue;
+          if (now.difference(since) < _offerTimeout) continue;
+          // 请求已经发给对端了，超时后必须通知它撤掉：
+          // 否则对端过了很久点「接收」，我们这边还会真的开始推流。
+          _transport.sendFileCancel(task.id, reason: '发送请求已超时');
+          _finish(
+            task.id,
+            TransferStatus.failed,
+            error: '对方没有响应接收请求（已等待 ${_offerTimeout.inSeconds} 秒）',
+          );
+          continue;
+        }
+
+        // 接收侧同样不能无限期挂着。
+        //
+        // 发送端等不到答复会在 [offerResponseTimeout] 后自己放弃，但那是
+        // 它那边的计时器——它发出的 cancel 帧要能到达我们才算数。一旦
+        // 连接已经断了（尤其是半开连接，连 RST 都没有），这个 cancel 永远
+        // 不会来，卡片就永久停在「等待接收」，连停滞看护都管不着（它只
+        // 看 transferring）。所以这里给一个比发送端更宽松的兜底：
+        // 发送端放弃了，我们没理由再等下去。
+        final since = _waitingSince[task.id] ?? task.createdAt;
+        if (now.difference(since) < _offerTimeout + _offerGracePeriod) continue;
         _finish(
           task.id,
           TransferStatus.failed,
-          error: '对方没有响应接收请求（已等待 ${_offerTimeout.inSeconds} 秒）',
+          error: '这份文件等你决定已经太久，发送方多半已经取消了',
         );
         continue;
       }
 
       if (task.status != TransferStatus.transferring) continue;
+
+      // 已同意、还在等对端轮到自己：这段等待不是停滞，不计时。
+      // 一次收 10 个大文件时，后面几个可能几十分钟都收不到一个字节。
+      if (_awaitingFirstChunk.contains(task.id)) continue;
 
       final last = _lastProgressAt[task.id] ?? task.createdAt;
       if (now.difference(last) < _stallTimeout) continue;
@@ -1258,15 +1550,14 @@ class TransferRepositoryLocal implements TransferRepository {
     );
     _speedStates.remove(id);
     _waitingSince.remove(id);
+    _awaitingFirstChunk.remove(id);
     _lastProgressAt.remove(id);
     _emit(force: true);
     _releaseWaiters(id);
   }
 
-  /// 叫醒还在等这个任务的一方（发送队列、回执等待），不改变任务状态。
+  /// 叫醒还在等这个任务回执的一方，不改变任务状态。
   void _releaseWaiters(int id) {
-    final waiter = _finishWaiters.remove(id);
-    if (waiter != null && !waiter.isCompleted) waiter.complete();
     final ackWaiter = _ackWaiters.remove(id);
     if (ackWaiter != null && !ackWaiter.isCompleted) ackWaiter.complete();
   }
@@ -1314,10 +1605,26 @@ class TransferRepositoryLocal implements TransferRepository {
 
 /// 待发送队列项。
 class _QueuedSend {
-  _QueuedSend({required this.id, required this.file});
+  _QueuedSend({
+    required this.id,
+    required this.file,
+    required this.batchId,
+    required this.batchIndex,
+    required this.batchCount,
+  });
 
   final int id;
   final PickedFile file;
+
+  /// 批次标识：同一次「批量发送」的文件共享同一个值，接收端据此把它们
+  /// 聚成一组一起展示，而不是逐个弹卡片。
+  final int batchId;
+
+  /// 在本批中的序号（从 0 开始），接收端按它排序展示。
+  final int batchIndex;
+
+  /// 本批总共有几个文件。
+  final int batchCount;
 }
 
 /// 速度测算状态。

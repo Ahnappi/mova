@@ -13,6 +13,31 @@ import '../../../domain/models/transfer/transfer_task.dart';
 // 必须显式导入：result.dart 中的 Error 会覆盖 dart:core 的同名类。
 import '../../../utils/result.dart';
 
+/// 一次「接收 / 拒绝」决定的快照。
+///
+/// 存在的原因：决定与执行之间可能隔着一个很长的 await（典型是目录选择框，
+/// 用户要翻好几层文件夹）。这段时间里任务列表会变——对方又发来新文件、
+/// 或者干脆换了另一台设备连过来。执行时若重新读一次「当前勾选了谁」，
+/// 就会把用户从没确认过的文件一起收下。
+///
+/// 因此打开选择框**之前**就把它冻下来，回来只认这份快照。
+class OfferDecision {
+  const OfferDecision({
+    required this.picked,
+    required this.dropped,
+    required this.session,
+  });
+
+  /// 用户勾选、要接收的文件 id。
+  final List<int> picked;
+
+  /// 没勾选、要显式拒绝的文件 id。
+  final List<int> dropped;
+
+  /// 冻结决定时的会话标识；执行时会话不一致则整批作废。
+  final String session;
+}
+
 /// 文件传输视图模型（ViewModel 层）：选文件、拖拽发送、保存位置、同意/拒绝/取消。
 class TransferViewModel extends ChangeNotifier {
   TransferViewModel({
@@ -29,6 +54,7 @@ class TransferViewModel extends ChangeNotifier {
       };
       _recordFiles(tasks);
       _captureFailure(tasks);
+      _syncOfferSelection();
       notifyListeners();
     });
     unawaited(_loadSaveDirectory());
@@ -57,6 +83,24 @@ class TransferViewModel extends ChangeNotifier {
   /// 最近一次操作反馈（如「已忽略 2 个不支持的文件」），供界面提示一次。
   String? _lastMessage;
 
+  /// 待接收面板里被勾选的文件 id。
+  ///
+  /// 新到的请求默认勾上（最常见的操作就是「全收」），用户取消勾选的
+  /// 那几个保持未勾选；已经不在待接收列表里的 id 会被自动清掉，
+  /// 免得勾选状态越积越多、最后对不上任何文件。
+  final Set<int> _selectedOfferIds = <int>{};
+
+  /// 已经出现过、且已经走过一次「默认勾选」的待接收 id。
+  ///
+  /// 任务列表每秒会推送十次（其它文件的进度变化、新请求到达都会触发），
+  /// [_syncOfferSelection] 也随之被调用十次。若它每次都把「所有待接收
+  /// 的 id」加回勾选集合，用户在等待期间取消勾选的那几个会被悄悄勾回来
+  /// ——最终收到的文件里就有他明确不想收的那几个。
+  ///
+  /// 因此默认勾选只作用于**第一次见到**的请求：见过的 id 一律不再自动
+  /// 勾选，勾不勾完全由用户说了算。
+  final Set<int> _seenOfferIds = <int>{};
+
   /// 全部任务（收发混合，按发起/到达顺序）。
   List<TransferTask> get tasks => _tasks;
 
@@ -81,6 +125,43 @@ class TransferViewModel extends ChangeNotifier {
             task.status == TransferStatus.waiting,
       )
       .toList(growable: false);
+
+  /// 待接收的个数。
+  int get pendingOfferCount => pendingOffers.length;
+
+  /// 待接收面板的「结构指纹」：只在待接收集合**或勾选状态**变化时改变。
+  ///
+  /// 不能只监听 [taskSignature]：那个指纹里只有 id，勾选变了它不变，
+  /// 界面上的复选框就会点不动。
+  String get offerSelectionSignature => pendingOffers
+      .map((task) => '${task.id}:${_selectedOfferIds.contains(task.id) ? 1 : 0}')
+      .join('|');
+
+  /// 勾选了多少个待接收文件。
+  int get selectedOfferCount => _selectedOfferIds.length;
+
+  /// 是否**所有**待接收文件都被勾上了（用于「全选 / 取消全选」的切换）。
+  bool get allOffersSelected {
+    final offers = pendingOffers;
+    return offers.isNotEmpty && _selectedOfferIds.length >= offers.length;
+  }
+
+  /// 某个待接收文件是否被勾上。
+  bool isOfferSelected(int fileId) => _selectedOfferIds.contains(fileId);
+
+  /// 勾选的文件总大小（界面上「接收 N 个 · 共 xxx」用）。
+  int get selectedOfferBytes => pendingOffers
+      .where((task) => _selectedOfferIds.contains(task.id))
+      .fold<int>(0, (sum, task) => sum + task.totalBytes);
+
+  /// 同时传输的文件数上限（要明明白白告诉用户，见 [concurrencyHint]）。
+  int get maxConcurrentTransfers => AppConfig.maxConcurrentTransfers;
+
+  /// 并发上限的界面文案。
+  ///
+  /// 不写出来的话，用户看到「点了 10 个接收、只动了 3 个」会以为卡住了。
+  String get concurrencyHint =>
+      '最多同时传输 $maxConcurrentTransfers 个，其余自动排队';
 
   /// 是否正在传输（有任务在收发中）。
   bool get hasActiveTransfer => _tasks.any((task) => task.isActive);
@@ -276,6 +357,176 @@ class TransferViewModel extends ChangeNotifier {
   Future<void> reject(int fileId) => _transferRepository.reject(fileId);
 
   Future<void> cancel(int fileId) => _transferRepository.cancel(fileId);
+
+  // ---------- 待接收面板：勾选与批量处理 ----------
+
+  /// 勾选/取消勾选一个待接收文件。
+  void toggleOfferSelection(int fileId) {
+    if (!_selectedOfferIds.remove(fileId)) {
+      _selectedOfferIds.add(fileId);
+    }
+    notifyListeners();
+  }
+
+  /// 全选 / 取消全选（当前已经是全选时就全部取消）。
+  void toggleSelectAllOffers() {
+    if (allOffersSelected) {
+      _selectedOfferIds.clear();
+    } else {
+      _selectedOfferIds.addAll(pendingOffers.map((task) => task.id));
+    }
+    notifyListeners();
+  }
+
+  /// 接收勾上的文件；[saveDirectory] 为空时落到当前保存目录。
+  ///
+  /// [decision] 是「这一次要处理谁」的快照，默认现取一份。需要弹目录
+  /// 选择框时必须先冻结再传进来（见 [acceptSelectedWithDirectoryPicker]）。
+  ///
+  /// 没勾上的那些会**同时被显式拒绝**：发送端为每个请求都挂着一个
+  /// 两分钟的计时器，放着不管的话对方要干等满 120 秒才知道你不收。
+  Future<void> acceptSelected({
+    String? saveDirectory,
+    OfferDecision? decision,
+  }) async {
+    final plan = decision ?? freezeOfferDecision();
+
+    // 会话换了就整批作废。旧请求早已随上一通会话一起收尾，
+    // 再拿它们的 fileId 去发拒绝帧，等于给**新**对端发了一串它
+    // 根本没见过的 id；新到的请求也还没经过用户确认，不能顺手收下。
+    if (_transferRepository.sessionId != plan.session) {
+      _errorMessage = '设备连接已切换，请重新确认要接收的文件';
+      notifyListeners();
+      return;
+    }
+
+    // 只处理「还待接收、且仍属于这条会话」的那几个。
+    final picked = _stillWaiting(plan.picked, plan.session);
+    final dropped = _stillWaiting(plan.dropped, plan.session);
+
+    // 只摘掉这次处理掉的那些：期间新到的请求保持用户（或默认勾选）
+    // 的状态，等他下一次决定，而不是被一并清空。
+    final handled = <int>{...picked, ...dropped};
+    _selectedOfferIds.removeWhere(handled.contains);
+    notifyListeners();
+
+    if (dropped.isNotEmpty) {
+      await _transferRepository.rejectMany(dropped);
+    }
+    if (picked.isEmpty) {
+      if (dropped.isNotEmpty) _lastMessage = '已拒绝 ${dropped.length} 个文件';
+      notifyListeners();
+      return;
+    }
+
+    final result = await _transferRepository.acceptMany(
+      picked,
+      saveDirectory: saveDirectory,
+    );
+    switch (result) {
+      case Error<int>():
+        _errorMessage = result.error.toString();
+        _log.warning('批量接收失败：${result.error}');
+      case Ok<int>(value: final accepted):
+        // 报**实际接下的**数量：目录检查与逐文件准备都是 await，
+        // 期间断连或换设备时后面的文件根本没处理，
+        // 照着请求数报「已接收 10 个」是骗人。
+        final rejected = dropped.isEmpty ? '' : '，拒绝 ${dropped.length} 个';
+        _lastMessage = '已接收 $accepted 个文件$rejected';
+    }
+    notifyListeners();
+  }
+
+  /// 把「这次要接收谁、拒绝谁」冻成一份快照。
+  ///
+  /// 弹目录选择框要等用户翻好几层文件夹，这期间任务列表早就变了：
+  /// 对方又发来新文件（新请求默认勾上），甚至换了另一台设备连过来。
+  /// 若等选完目录再读一次「当前勾选了谁」，就会把用户从没见过的
+  /// 文件一起收下——他以为自己只确认了刚才那几个。
+  OfferDecision freezeOfferDecision() {
+    final offers = pendingOffers;
+    return OfferDecision(
+      picked: <int>[
+        for (final task in offers)
+          if (_selectedOfferIds.contains(task.id)) task.id,
+      ],
+      dropped: <int>[
+        for (final task in offers)
+          if (!_selectedOfferIds.contains(task.id)) task.id,
+      ],
+      session: _transferRepository.sessionId,
+    );
+  }
+
+  /// 从 [ids] 里筛出「仍待接收、且还属于这条会话」的那些。
+  ///
+  /// 期间被用户取消、被看护判失败、或者会话已经换人的，都不在结果里。
+  List<int> _stillWaiting(Iterable<int> ids, String session) {
+    final byId = <int, TransferTask>{
+      for (final task in pendingOffers) task.id: task,
+    };
+    return <int>[
+      for (final id in ids)
+        if (byId[id]?.sessionId == session) id,
+    ];
+  }
+
+  /// 弹出目录选择后接收勾选的文件（会顺带记住该目录）。
+  Future<void> acceptSelectedWithDirectoryPicker() async {
+    // 先冻结、再开选择框：翻文件夹的这几十秒里，任务列表会变。
+    // 顺序反过来的话，「存到…」就可能收下用户没有确认过的新文件。
+    final plan = freezeOfferDecision();
+    final directory = await _transferRepository.pickSaveDirectory(
+      dialogTitle: '选择这批文件的保存位置',
+    );
+    if (directory == null) return; // 用户取消选择
+    await _transferRepository.rememberSaveDirectory(directory);
+    _saveDirectory = directory;
+    notifyListeners();
+    await acceptSelected(saveDirectory: directory, decision: plan);
+  }
+
+  /// 把待接收列表里剩下的全部拒绝（面板上的「全部拒绝」）。
+  Future<void> rejectPending() async {
+    final offers = pendingOffers;
+    if (offers.isEmpty) return;
+
+    final ids = offers.map((task) => task.id).toList(growable: false);
+    _selectedOfferIds.clear();
+    notifyListeners();
+
+    await _transferRepository.rejectMany(ids);
+    _lastMessage = '已拒绝 ${ids.length} 个文件';
+    notifyListeners();
+  }
+
+  /// 让勾选状态跟待接收列表对齐：新到的默认勾上，已处理的自动剔除。
+  ///
+  /// 返回是否有变化（供调用方决定要不要 [notifyListeners]）。
+  bool _syncOfferSelection() {
+    final pendingIds = <int>{
+      for (final task in _tasks)
+        if (task.direction == TransferDirection.receiving &&
+            task.status == TransferStatus.waiting)
+          task.id,
+    };
+
+    final before = _selectedOfferIds.length;
+    _selectedOfferIds.removeWhere((id) => !pendingIds.contains(id));
+    var changed = _selectedOfferIds.length != before;
+
+    // 默认勾选只给**第一次见到**的请求：见过的（无论用户是留着还是
+    // 取消了勾选）一律不再自动加回，否则用户在等待期间取消勾选的那几个
+    // 会被下一次任务推送勾回来，最后收到他明确不想收的文件。
+    for (final id in pendingIds) {
+      if (_seenOfferIds.add(id) && _selectedOfferIds.add(id)) changed = true;
+    }
+
+    // 已经不待接收的 id 从「见过」里删掉：集合不会无限增长，
+    // 同一个 fileId 若将来再次出现，也应当重新默认勾上。
+    _seenOfferIds.removeWhere((id) => !pendingIds.contains(id));
+    return changed;
+  }
 
   @override
   void dispose() {

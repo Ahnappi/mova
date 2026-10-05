@@ -72,6 +72,16 @@ IDI_APP_ICON            ICON                    "resources\\app_icon.ico"
 #define VERSION_AS_STRING "1.0.0"
 #endif
 
+// CompanyName 别乱改：它不只是一行说明文字。
+//
+// path_provider 在 Windows 上读 exe 的 VERSIONINFO 资源，用
+//   %APPDATA%\<CompanyName>\<ProductName>
+// 作为 getApplicationSupportDirectory() 的返回值，mova 的传输历史与
+// 设置就存在那里。改了 CompanyName 等于把数据目录整体挪走，老数据会
+// 读不到（文件还在旧目录里，需要手动搬）。
+//
+// 同理，下面这些字段会出现在「设置 → 应用和功能」的列表里，
+// 是用户判断「装的是什么、谁发布的」的唯一依据。
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION VERSION_AS_NUMBER
  PRODUCTVERSION VERSION_AS_NUMBER
@@ -89,11 +99,11 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.example" "\0"
+            VALUE "CompanyName", "Ahnappi" "\0"
             VALUE "FileDescription", "mova" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "mova" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Ahnappi. All rights reserved." "\0"
             VALUE "OriginalFilename", "mova.exe" "\0"
             VALUE "ProductName", "mova" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"

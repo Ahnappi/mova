@@ -8,7 +8,16 @@
 PRODUCT_NAME = mova
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.example.mova
+//
+// 不要用 com.example.*：那是 flutter create 的模板占位值。
+// 这个标识同时决定两件事，一旦对外发布就很难再改：
+//   1. 数据目录名——path_provider 在 macOS 上取
+//      NSBundle.mainBundle.bundleIdentifier，存到
+//      ~/Library/Application Support/<bundle id>。改了它，老用户
+//      的传输历史与设置会「消失」（其实还留在旧目录里）。
+//   2. 将来的签名公证——Apple 要求这个标识归你所有，
+//      com.example 域名不属于任何人，公证建不出来。
+PRODUCT_BUNDLE_IDENTIFIER = com.ahnappi.mova
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.example. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 Ahnappi. All rights reserved.

@@ -65,10 +65,25 @@ class TransferTask {
     this.speedBytesPerSecond = 0,
     this.averageSpeedBytesPerSecond = 0,
     this.sessionId = '',
+    this.batchId,
+    this.batchIndex,
+    this.batchCount,
   }) : createdAt = createdAt ?? DateTime(1970);
 
   /// 传输 id（发起方分配，随机生成以避免双方撞号）。
   final int id;
+
+  /// 批次标识：同一次「批量发送」的文件共享同一个值。
+  ///
+  /// 接收端据此把一批文件聚成一组展示，让用户一次决定收哪些；
+  /// 单独发来的文件也可以有（这批就只有它一个）。
+  final int? batchId;
+
+  /// 在本批中的序号（从 0 开始）。
+  final int? batchIndex;
+
+  /// 本批总共有几个文件。
+  final int? batchCount;
 
   final String fileName;
   final int totalBytes;

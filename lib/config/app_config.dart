@@ -4,20 +4,74 @@
 class AppConfig {
   const AppConfig._();
 
+  // ---------- 版本与更新 ----------
+
+  /// 对外展示的版本名（x.y.z）。
+  static const String appVersion = '1.0.0';
+
+  /// 版本号（整数，只增不减）。
+  ///
+  /// **判断新旧一律用它**，不要去解析 [appVersion]：按字典序比较的话
+  /// '1.9.0' 会大于 '1.10.0'，正好得出相反的结论。
+  static const int appBuildNumber = 100;
+
+  /// 界面上那一行版本文案，如 `1.0.0（100）`。
+  static String get versionLabel => '$appVersion（$appBuildNumber）';
+
+  /// 版本清单地址：一个静态 JSON 文件，点「检查更新」时拉一次。
+  ///
+  /// 清单格式（只有 `versionCode` 是必填）：
+  /// ```json
+  /// {
+  ///   "versionName": "1.1.0",
+  ///   "versionCode": 101,
+  ///   "notes": "修了什么、加了什么",
+  ///   "url": "https://……/下载页",
+  ///   "mandatory": false
+  /// }
+  /// ```
+  /// `versionCode` 比 [appBuildNumber] 大才提示更新；`url` 是下载页
+  /// （不是安装包直链：macOS 给 DMG、Windows 给安装包，让页面去分派）。
+  ///
+  /// 发新版时改仓库里这个文件即可，不用重新发布应用。
+  static const String updateManifestUrl =
+      'https://raw.githubusercontent.com/ahnappi/mova/main/version.json';
+
+  /// 兜底下载页：清单里没给 `url`（或给的不是一个能打开的网页）时用它。
+  ///
+  /// 没有它的话，「发现新版本」配一个点了没反应的下载按钮，用户只能自己
+  /// 去猜去哪儿下。给一个固定的发布页，至少永远有地方可去。
+  static const String updateFallbackUrl =
+      'https://github.com/ahnappi/mova/releases';
+
+  /// 拉版本清单的超时。
+  ///
+  /// 检查更新是界面上的一次点击，卡十几秒比直接失败更难受；
+  /// 失败也只是「没查到」，不影响用。
+  static const Duration updateCheckTimeout = Duration(seconds: 8);
+
   /// TCP 消息端口：对端主动连接本机时使用。
   static const int tcpPort = 49153;
 
   /// 当前协议版本（建连时互报，用于兼容老版本对端）。
   ///
   /// v1：只有 offer / accept / chunk / end / cancel，发送端推完就算完成；
-  /// v2：end 帧带上字节数与 CRC32，新增 fileDone 回执帧。
-  static const int protocolVersion = 2;
+  /// v2：end 帧带上字节数与 CRC32，新增 fileDone 回执帧；
+  /// v3：新增 ping 心跳帧，并在 hello 里带 `ka` 能力位。
+  static const int protocolVersion = 3;
 
   /// 支持「收尾回执」的最低协议版本。
   ///
   /// 对端低于这个版本时不等待回执（它不会发），直接按完成处理，
   /// 免得明明传好了却白等一个超时。
   static const int receiptProtocolVersion = 2;
+
+  /// 支持「心跳」的最低协议版本。
+  ///
+  /// 只有确认对端会发心跳之后，才能把「太久没收到任何字节」当成
+  /// 连接已断的证据。低版本对端空闲时本来就是零字节，
+  /// 拿它判死等于版本一不一致就把正常连接掐断（见 keepAliveTimeout）。
+  static const int keepAliveProtocolVersion = 3;
 
   /// UDP 发现端口：局域网广播心跳使用。
   static const int discoveryPort = 49154;
@@ -71,15 +125,23 @@ class AppConfig {
 
   // ---------- 文件传输 ----------
 
-  /// 单个数据块大小（4 MiB）。
+  /// 单个数据块大小（8 MiB）。
   ///
   /// 采用「分块流式」读写，无论多大的文件都不会被整体读进内存，
   /// 因此 10GB 级文件与 10MB 文件的内存占用是一样的。
   ///
   /// 块越大，Dart 层的循环与系统调用次数越少：实测 1MiB 时每块都要
   /// 经历一次「读盘 → 组帧 → 写 socket → 写文件」的完整往返，
-  /// 大文件的吞吐被这些固定开销拖住，调到 4MiB 后开销降到约 1/4。
-  static const int fileChunkSize = 4 * 1024 * 1024;
+  /// 大文件的吞吐被这些固定开销拖住，4MiB 时开销降到约 1/4，8MiB 再降一半。
+  ///
+  /// **8MiB 是当前协议帧格式能容忍的上限，不要随手调大**：
+  /// 对端判据是 `maxChunkPayloadLength = 4 + 2 * 本机 fileChunkSize`，
+  /// 而这个上限各端按自己的块大小算。8MiB 的 payload 是 `4 + 8MiB`，
+  /// 正好等于**旧版（4MiB）**那台机器的上限，再多一个字节它就会在收到
+  /// 第一块时判协议违规并直接断开连接（见 [FrameReader]）。
+  /// 想用更大的块，必须先在 hello 里协商块大小，让双方都同意才放大
+  /// ——步子不能跨过「对端还不知道你变大了」这一步。
+  static const int fileChunkSize = 8 * 1024 * 1024;
 
   /// 发送端未确认积压上限（32 MiB）。
   ///
@@ -112,6 +174,39 @@ class AppConfig {
   /// 超过这个时间仍无回执，按失败处理并给出明确原因。
   static const Duration transferAckTimeout = Duration(seconds: 60);
 
+  /// 同时传输的文件数上限。
+  ///
+  /// 注意这**不会提升总吞吐**：只有一条 TCP 连接，带宽是固定的，
+  /// N 路并发只是把带宽分给 N 个文件。真正的收益是另外两条：
+  ///   - 小文件不用排在大文件后面干等（消除队头阻塞）；
+  ///   - 「等对方点接收」那两分钟可以重叠，而不是逐个累加。
+  ///
+  /// 每路并发各自持有 [fileChunkSize] 的读缓冲，加上最多 [maxInFlightBytes]
+  /// 的未 flush 积压，因此这个值直接决定内存峰值：3 路大约 120MiB。
+  /// 再往上加收益递减，内存却是线性增长。
+  static const int maxConcurrentTransfers = 3;
+
+  /// 心跳间隔：连接空闲时每多久发一个存活探测帧。
+  ///
+  /// 只在「这一段时间确实没往外发过任何字节」时才发——正在传文件时，
+  /// 数据本身就是最好的存活证明，不需要额外心跳。
+  ///
+  /// 存在的理由：TCP 建立之后如果两端都不说话，谁也不知道对方还在不在。
+  /// 对端合盖、Wi-Fi 断了、进程被杀，这些情况既不发 FIN 也不发 RST，
+  /// 本端会一直「以为还连着」，直到下一次真正写数据失败——那可能是
+  /// 几分钟以后，界面上表现为「一直在接收但进度不动」。
+  static const Duration keepAliveInterval = Duration(seconds: 5);
+
+  /// 多久没收到对端任何字节就算连接已死。
+  ///
+  /// 必须显著大于 [keepAliveInterval]，否则一次网络抖动就会误判断链。
+  /// 取 4 倍（20 秒），可以容忍连续丢三个心跳。
+  ///
+  /// **只对确认具备心跳能力的对端生效**（见 [keepAliveProtocolVersion]）：
+  /// 老版本既不发 ping 也不回 ping，空闲二十秒是它的常态，
+  /// 拿这条判据去套它，等于一端升级就把所有老连接掐断。
+  static const Duration keepAliveTimeout = Duration(seconds: 20);
+
   /// 是否在文件传输时计算并校验 CRC32。
   ///
   /// 代价：发送端每读一块要额外扫一遍（实测约 300MB/s，只占单核的一小部分），
@@ -131,6 +226,18 @@ class AppConfig {
   /// 达到上限就暂停读取 socket，让 TCP 自己的窗口去做背压，
   /// 由对端放慢发送。这样即便磁盘比网络慢，内存占用也是有界的。
   static const int maxPendingWriteBytes = 32 * 1024 * 1024;
+
+  /// 背压暂停期间，多久「松开一次」读 socket（见 [maxPendingWriteBytes]）。
+  ///
+  /// 这是为了修一个很隐蔽的问题：暂停读 socket 期间，Dart **按设计**
+  /// 不会投递「连接已关闭」事件（dart sdk 的 socket_patch.dart 里明写了）。
+  /// 而传大文件时几乎必然处于暂停态，于是对端断线我们根本收不到通知，
+  /// 只能干等 [transferStallTimeout] 那 90 秒——界面上就是「一直在接收、
+  /// 进度不动」。
+  ///
+  /// 所以暂停期间定期放开一次：让 socket 把积压数据和 EOF / 错误交上来，
+  /// 收到数据后会被再次压住。取值远小于停滞超时，断链就能在几秒内被发现。
+  static const Duration backpressureProbeDelay = Duration(seconds: 3);
 
   /// 允许传输的图片扩展名。
   static const List<String> imageExtensions = [
@@ -314,6 +421,29 @@ class AppConfig {
   static const double speedEmaAlpha = 0.3;
 
   // ---------- 本地存储 ----------
+
+  /// 发布前改掉的旧应用标识（macOS Bundle ID）。
+  ///
+  /// 应用标识直接决定数据目录名，改名之后老用户会拿到一个全新的空目录，
+  /// 历史与设置看起来「丢了」——其实文件还躺在旧目录里，首次启动时
+  /// 搬一次即可（迁移逻辑在 StorageService 里）。
+  static const String legacyMacosBundleId = 'com.example.mova';
+
+  /// 旧版 Windows 的 CompanyName / ProductName（合起来决定数据目录）。
+  static const String legacyWindowsCompanyName = 'com.example';
+
+  /// 旧版 Windows 的产品名（与 [legacyWindowsCompanyName] 拼成目录）。
+  static const String legacyWindowsProductName = 'mova';
+
+  /// 迁移完成标记文件名（写在新数据目录里，避免每次启动都去翻旧目录）。
+  static const String storageMigrationMarker = '.migration-done';
+
+  /// 迁移过程中临时文件的后缀（写完再改名为正式文件名）。
+  ///
+  /// 直接往正式路径复制的话，复制到一半失败（磁盘满、进程被杀）会在正式
+  /// 路径上留下半个文件；下次重试看到「文件已存在」就跳过它，
+  /// 于是这个残缺文件会被当成已迁移的数据，甚至据此打上完成标记。
+  static const String storageMigrationTempSuffix = '.mova-migrate-tmp';
 
   /// 应用配置文件名（位于应用数据目录下）。
   static const String settingsFileName = 'settings.json';

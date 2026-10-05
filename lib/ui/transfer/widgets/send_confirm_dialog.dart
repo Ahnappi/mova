@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
+import '../../../config/app_config.dart';
 import '../../../domain/models/transfer/picked_file.dart';
 import '../../theme/app_motion_widgets.dart';
 import '../../theme/app_theme.dart';
@@ -84,6 +85,18 @@ class _SendConfirmDialog extends StatelessWidget {
                       fontSize: 13,
                     ),
                   ),
+                  // 超过并发上限时说明一句：否则对面看到「点了 10 个、
+                  // 只动了 3 个」会以为卡住了。
+                  if (count > AppConfig.maxConcurrentTransfers) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      '最多同时传输 ${AppConfig.maxConcurrentTransfers} 个，其余自动排队',
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),

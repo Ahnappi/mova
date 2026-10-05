@@ -9,6 +9,7 @@ import '../../settings/widgets/settings_dialog.dart';
 import '../../storage/widgets/storage_paths_dialog.dart';
 import '../../theme/app_theme.dart';
 import '../../transfer/view_models/transfer_view_model.dart';
+import '../../transfer/widgets/incoming_offers_dialog.dart';
 import '../../transfer/widgets/send_confirm_dialog.dart';
 import '../view_models/chat_view_model.dart';
 import '../view_models/connection_view_model.dart';
@@ -49,6 +50,15 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 聊天流上次长度：新条目进来自动滚动到底部并做入场动效。
   int _lastTimelineLength = 0;
 
+  /// 待接收面板是否正开着（避免同一个请求弹两次）。
+  bool _offersPanelOpen = false;
+
+  /// 用户把待接收面板关掉了但没做决定（「稍后处理」）。
+  ///
+  /// 这种情况下不再反复弹：卡片仍在聊天流里，想接收随时点。
+  /// 等这一批全部处理完（数量归零）才重新恢复自动弹出。
+  bool _offersPanelDismissed = false;
+
   @override
   void initState() {
     super.initState();
@@ -75,8 +85,21 @@ class _ChatScreenState extends State<ChatScreen> {
     final chat = context.watch<ChatViewModel>();
     // 只在任务增删/顺序变化时重建列表，进度刷新交给卡片自己。
     context.select<TransferViewModel, String>((vm) => vm.taskSignature);
+    // 错误提示条与保存位置行也得跟着更新，但**各自只订阅自己那一个字段**：
+    // 传输过程中 ViewModel 每 100ms 就 notify 一次进度，整棵树不能跟着
+    // 重建；而这两个值一旦变化必须立刻体现，否则就是「明明改了、界面不动」：
+    // - errorMessage：点了错误条上的关闭，状态确实清空了，横幅却还在原地，
+    //   看起来就像按钮失灵；
+    // - saveDirectory：加载完毕后仍然是「获取中…」，换了目录也不跟着变。
+    context.select<TransferViewModel, String?>((vm) => vm.errorMessage);
+    context.select<TransferViewModel, String?>((vm) => vm.saveDirectory);
+    // 有待接收的文件就弹出面板：一次发十个时，逐个点十次「接收」太折磨人，
+    // 而且「只收其中几个」在单张卡片上根本表达不出来。
+    context.select<TransferViewModel, int>((vm) => vm.pendingOfferCount);
     // 设置项（发文件前要不要确认）在发送那一步才读，不必订阅整个 ViewModel。
     final transfer = context.read<TransferViewModel>();
+
+    _maybeOpenOffersPanel();
 
     final timeline = _buildTimeline(chat, transfer);
     final hasNew = timeline.length > _lastTimelineLength;
@@ -188,6 +211,38 @@ class _ChatScreenState extends State<ChatScreen> {
   void _setDragging(bool value) {
     if (_dragging == value) return;
     setState(() => _dragging = value);
+  }
+
+  // ---------- 待接收面板 ----------
+
+  /// 有待接收的文件就弹一次面板（本帧结束之后才开路由）。
+  ///
+  /// build 过程中直接 showDialog 会抛错，因此放到 post-frame；
+  /// 同一个请求只弹一次，用户「稍后处理」之后这一批不再打扰。
+  void _maybeOpenOffersPanel() {
+    final pending = context.read<TransferViewModel>().pendingOfferCount;
+
+    if (pending == 0) {
+      _offersPanelDismissed = false;
+      return;
+    }
+    if (_offersPanelOpen || _offersPanelDismissed) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openOffersPanel());
+  }
+
+  Future<void> _openOffersPanel() async {
+    if (_offersPanelOpen || !mounted) return;
+    _offersPanelOpen = true;
+
+    final connection = context.read<ConnectionViewModel>();
+    final decided = await showIncomingOffersDialog(
+      context,
+      peerName: connection.remoteName ?? '对方',
+    );
+
+    _offersPanelOpen = false;
+    if (!decided && mounted) setState(() => _offersPanelDismissed = true);
   }
 
   Future<void> _handleDrop(List<DropItem> items) async {

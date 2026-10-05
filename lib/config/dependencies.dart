@@ -32,10 +32,12 @@ import '../data/services/system/file_opener_service.dart';
 import '../data/services/system/system_settings_service.dart';
 import '../data/services/transfer/file_storage_service.dart';
 import '../data/services/transfer/incoming_file_writer.dart';
+import '../data/services/update/update_service.dart';
 import '../ui/chat/view_models/chat_view_model.dart';
 import '../ui/chat/view_models/connection_view_model.dart';
 import '../ui/counter/view_models/counter_view_model.dart';
 import '../ui/settings/view_models/settings_view_model.dart';
+import '../ui/settings/view_models/update_view_model.dart';
 import '../ui/transfer/view_models/transfer_view_model.dart';
 
 /// 依赖装配（参照 compass_app 的 config/dependencies.dart）。
@@ -120,6 +122,8 @@ List<SingleChildWidget> buildProviders({
     // Service 层
     Provider(create: (context) => NetworkInfoService()),
     Provider(create: (context) => SystemSettingsService()),
+    // 版本更新：只在用户点「检查更新」时才发一次请求，不后台轮询。
+    Provider(create: (context) => UpdateService()),
     // 应用内预览不了的格式（Office / SVG / HEIC）用它交给系统打开。
     Provider(create: (context) => FileOpenerService()),
     Provider(
@@ -222,6 +226,12 @@ List<SingleChildWidget> buildProviders({
         onDeviceNameChanged: (name) =>
             context.read<ConnectionViewModel>().applyDeviceName(name),
       )..load(),
+    ),
+    ChangeNotifierProvider(
+      create: (context) => UpdateViewModel(
+        updateService: context.read(),
+        opener: context.read(),
+      ),
     ),
     ChangeNotifierProvider(
       create: (context) => ChatViewModel(
