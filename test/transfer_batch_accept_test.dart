@@ -27,7 +27,7 @@ import 'package:mova/utils/result.dart';
 void main() {
   late Directory temp;
   late Directory saveDir;
-  late ChatTransportService sender;
+  late _GatedTransport sender;
   late ChatTransportService receiver;
   late int port;
 
@@ -45,7 +45,7 @@ void main() {
     await probe.close();
 
     receiver = ChatTransportService();
-    sender = ChatTransportService();
+    sender = _GatedTransport();
 
     final ready = Completer<void>();
     receiver.status.listen((status) {
@@ -76,22 +76,6 @@ void main() {
     final file = File(p.join(temp.path, name));
     await file.writeAsBytes(Uint8List(bytes));
     return file;
-  }
-
-  /// 与本机监听端建一条连接，并等到会话真正建立（sessionId 就绪）。
-  ///
-  /// 不能只 `await connect()`：会话标识是握手之后才有的，而传输仓储在
-  /// 构造时就会读它——早了会拿到 null，之后的「会话绑定」校验会出错。
-  Future<T> connectPeer<T extends ChatTransportService>(T transport) async {
-    final result = await transport.connect('127.0.0.1', port);
-    if (result case Error<void> failure) {
-      fail('测试环境里连本机失败：${failure.error}');
-    }
-    for (var i = 0; i < 200 && transport.sessionId == null; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    }
-    expect(transport.sessionId, isNotNull, reason: '会话没建立，用例前提不成立');
-    return transport;
   }
 
   Future<void> waitFor(
@@ -278,19 +262,9 @@ void main() {
     // （用例会报「没观察到排队」），而采到样的时候大文件本身又可能被
     // 正常的停滞判定误伤——同样是红，却分不清是规则错了还是机器慢。
     // 现在前 3 个文件卡在推流入口不动，第 4 个确定在排队，想停多久停多久。
-    await sender.disconnect();
-    // 等接收端把上一个会话彻底清掉再连：连早了会被当成「已连接另一台
-    // 设备」拒掉，症状是「一个请求都收不到」——和规则写错长得一模一样，
-    // 排查起来非常费劲，所以这里把前提钉死。
-    for (var i = 0; i < 200 && receiver.sessionId != null; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    }
-    expect(
-      receiver.sessionId,
-      isNull,
-      reason: '上一个会话没断开，这条用例的前提不成立',
-    );
-    final gated = await connectPeer(_GatedTransport());
+    final gated = sender;
+    gated.hold();
+    addTearDown(gated.release);
 
     final senderRepo = TransferRepositoryLocal(
       gated,
@@ -430,6 +404,9 @@ void main() {
 /// 第 N+1 个因此**确定**在排队，想停多久停多久。
 class _GatedTransport extends ChatTransportService {
   final Completer<void> _release = Completer<void>();
+  bool _held = false;
+
+  void hold() => _held = true;
 
   /// 已经进入推流、正卡在闸门上的 fileId（顺序即进入顺序）。
   final List<int> enteredIds = <int>[];
@@ -449,7 +426,7 @@ class _GatedTransport extends ChatTransportService {
     bool Function()? isCancelled,
   }) async {
     enteredIds.add(fileId);
-    await _release.future;
+    if (_held) await _release.future;
     return super.sendFileStream(
       fileId: fileId,
       path: path,

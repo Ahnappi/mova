@@ -21,6 +21,50 @@ import 'package:mova/data/services/chat/chat_transport_service.dart';
 import 'package:mova/data/services/chat/protocol.dart';
 
 void main() {
+  test('输出侧连接复位会结束会话，不泄漏未处理异常', () async {
+    final socket = _FakeSocket();
+    final transport = ChatTransportService(
+      connector: (host, port, timeout) async => socket,
+    );
+    addTearDown(transport.dispose);
+    await transport.connect('10.0.0.1', 1);
+    socket.failOutput();
+    await Future<void>.delayed(Duration.zero);
+    expect(transport.sessionId, isNull);
+  });
+
+  test('旧连接输出侧的迟到复位不影响新会话', () async {
+    final oldSocket = _FakeSocket();
+    final newSocket = _FakeSocket();
+    final sockets = [oldSocket, newSocket];
+    final transport = ChatTransportService(
+      connector: (host, port, timeout) async => sockets.removeAt(0),
+    );
+    addTearDown(transport.dispose);
+    await transport.connect('10.0.0.1', 1);
+    await transport.disconnect();
+    await transport.connect('10.0.0.2', 2);
+    final session = transport.sessionId;
+    oldSocket.failOutput();
+    await Future<void>.delayed(Duration.zero);
+    expect(transport.sessionId, session);
+    expect(session, isNotNull);
+  });
+
+  test('排队写入抛错会结束会话，不泄漏未处理异常', () async {
+    final socket = _FakeSocket();
+    final transport = ChatTransportService(
+      connector: (host, port, timeout) async => socket,
+    );
+    addTearDown(transport.dispose);
+    await transport.connect('10.0.0.1', 1);
+    await Future<void>.delayed(Duration.zero);
+    socket.failAdd = true;
+    await transport.send('触发写入失败');
+    await Future<void>.delayed(Duration.zero);
+    expect(transport.sessionId, isNull);
+  });
+
   test('写入队列被 flush 卡住期间换了连接，旧会话的帧不会写给新设备', () async {
     final dir = await Directory.systemTemp.createTemp('mova_write_queue');
     addTearDown(() => dir.delete(recursive: true).catchError((Object _) => dir));
@@ -94,6 +138,12 @@ void main() {
 class _FakeSocket extends Stream<Uint8List> implements Socket {
   /// 写出去的全部字节（按写入顺序）。
   final List<int> written = <int>[];
+  final Completer<Socket> _done = Completer<Socket>();
+  bool failAdd = false;
+
+  void failOutput() {
+    _done.completeError(const SocketException('Connection reset by peer'));
+  }
 
   final StreamController<Uint8List> _inbound = StreamController<Uint8List>();
   final Completer<void> _flushGate = Completer<void>();
@@ -114,7 +164,10 @@ class _FakeSocket extends Stream<Uint8List> implements Socket {
   }
 
   @override
-  void add(List<int> data) => written.addAll(data);
+  void add(List<int> data) {
+    if (failAdd) throw const SocketException('Connection reset by peer');
+    written.addAll(data);
+  }
 
   @override
   Future<void> flush() async {
@@ -146,7 +199,7 @@ class _FakeSocket extends Stream<Uint8List> implements Socket {
   Future<void> close() async {}
 
   @override
-  Future<Socket> get done => Future<Socket>.value(this);
+  Future<Socket> get done => _done.future;
 
   @override
   Encoding get encoding => utf8;

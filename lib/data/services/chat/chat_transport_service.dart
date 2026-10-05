@@ -683,6 +683,8 @@ class ChatTransportService {
         if (socket != null && !identical(current, socket)) return;
         current.add(frame);
         _lastOutboundAt = DateTime.now();
+      }).catchError((Object error) {
+        if (socket != null) _handleSocketError(socket, error);
       }),
     );
   }
@@ -780,13 +782,31 @@ class ChatTransportService {
       'ka': true,
     }));
 
+    // Socket 的读流与输出 done Future 是两条独立的错误通道。
+    // 对端复位可能使写入失败，即使读流有 onError，done 仍需接住。
+    unawaited(socket.done.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {
+        _handleSocketError(socket, error);
+      },
+    ));
     _socketSub = socket.listen(
       _feed,
-      onDone: () => _onSocketClosed(),
-      onError: (Object _) => _onSocketClosed(),
+      onDone: () {
+        if (identical(_socket, socket)) _onSocketClosed();
+      },
+      onError: (Object error) => _handleSocketError(socket, error),
       cancelOnError: true,
     );
     _startKeepAlive();
+  }
+
+  void _handleSocketError(Socket socket, Object error) {
+    // 旧连接的迟到错误不能关闭刚建立的新连接。
+    if (!identical(_socket, socket)) return;
+    _log.info('连接读写失败，结束当前会话：$error');
+    socket.destroy();
+    _onSocketClosed();
   }
 
   void _onSocketClosed() {
