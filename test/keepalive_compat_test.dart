@@ -5,6 +5,13 @@
 // 空闲二十几秒是它的正常状态——一端升级就把所有老连接掐断是不可接受的。
 //
 // 所以：能力必须先协商（hello 里的 ka），没协商过就只发 ping、不判死。
+//
+// 写这组用例时踩到的一个坑：**`connected` 早于 hello**。
+// transport 在 TCP 连上那一刻就发 `connected`（此时 `_remoteKeepAliveCapable`
+// 刚被重置为 false），之后才监听、读取并解析对端的 hello。
+// 所以「等到 connected 再断言心跳能力」读到的往往只是初始值：
+// 断言 isFalse 是假绿，断言 isTrue 在慢机器上会假红。
+// 正确做法是等 hello 真正解析完（`remoteName` 出现）。
 
 import 'dart:io';
 
@@ -55,8 +62,13 @@ void main() {
     final peer = await dialLegacyPeer(withKeepAlive: false);
     addTearDown(peer.destroy);
 
-    // 先等握手落地（能力位来自对端的 hello）。
-    await _until(() => statuses.contains(ConnectionStatus.connected));
+    // 先等对端的 hello 真正解析完：能力位是它带来的。
+    // 不能只等 connected —— 那个状态在 TCP 连上时就发了，
+    // 比 hello 到达早，等到它就断言，多半只是在看初始值 false。
+    await _until(
+      () => local.remoteName == '老版本',
+      reason: '等待旧版对端 hello 解析完成',
+    );
     expect(local.remoteKeepAliveCapable, isFalse,
         reason: '没在 hello 里声明心跳能力的对端，不能按「收不到字节」判死');
 
@@ -74,7 +86,11 @@ void main() {
     final peer = await dialLegacyPeer(withKeepAlive: true);
     addTearDown(peer.destroy);
 
-    await _until(() => statuses.contains(ConnectionStatus.connected));
+    // 同样要等 hello 解析完，而不是只等 connected（那只是 TCP 已连上）。
+    await _until(
+      () => local.remoteName == '老版本' && local.remoteKeepAliveCapable,
+      reason: '等待对端 hello 解析完成并确认心跳能力',
+    );
     expect(local.remoteKeepAliveCapable, isTrue,
         reason: 'hello 里声明了 ka，就应启用「收不到字节即断链」这条判据');
 
