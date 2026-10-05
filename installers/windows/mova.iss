@@ -97,14 +97,14 @@ Filename: "{app}\{#MyAppExeName}"; \
     Flags: nowait postinstall skipifsilent
 
 [Code]
-; 卸载收尾：询问要不要连本地数据一起删。
-;
-; 默认**不删**——传输历史和设置是用户的数据，正经软件不会在卸载时
-; 悄悄抹掉。这里做成一次明确的选择，并把路径摊给用户看。
-;
-; 顺带检查 com.example 那个旧目录：早期版本用模板默认的
-; CompanyName="com.example"，数据落在 %APPDATA%\com.example\mova。
-; 换到 Ahnappi 之后旧目录就没人管了，借卸载的时机给它一次清理机会。
+// 卸载收尾：询问要不要连本地数据一起删。
+//
+// 默认**不删**——传输历史和设置是用户的数据，正经软件不会在卸载时
+// 悄悄抹掉。这里做成一次明确的选择，并把路径摊给用户看。
+//
+// 顺带检查 com.example 那个旧目录：早期版本用模板默认的
+// CompanyName="com.example"，数据落在 %APPDATA%\com.example\mova。
+// 换到 Ahnappi 之后旧目录就没人管了，借卸载的时机给它一次清理机会。
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   CurrentDir: String;
