@@ -46,7 +46,7 @@ void main() {
     await probe.close();
 
     receiver = ChatTransportService();
-    sender = ChatTransportService();
+    sender = _QueueGateTransport();
 
     final ready = Completer<void>();
     receiver.status.listen((status) {
@@ -112,11 +112,23 @@ void main() {
     // 这是支持并发之后才有的排队形态：以前一次只发一个请求、等这个文件
     // 彻底传完才发下一个，压根不存在「已同意但还没轮到」这种状态。
     // 排队不计时的老规则现在由这条路来接。
+    final gated = sender as _QueueGateTransport;
+    gated.hold = true;
+    addTearDown(gated.release);
+    final accepted = <int>{};
+    final allAccepted = Completer<void>();
+    final acceptSub = sender.transferEvents.listen((event) {
+      if (event is AcceptReceived) {
+        accepted.add(event.fileId);
+        if (accepted.length == 5 && !allAccepted.isCompleted) allAccepted.complete();
+      }
+    });
+    addTearDown(acceptSub.cancel);
     final senderRepo = TransferRepositoryLocal(
       sender,
       fileStorage(),
-      // 故意给得极短：只要排队超过 0.5 秒就会被误杀（若没有保护）。
-      offerTimeout: const Duration(milliseconds: 500),
+      // 给接收端的真实磁盘准备留出时间；确认后仍跨过完整超时窗口。
+      offerTimeout: const Duration(seconds: 5),
       stallTimeout: const Duration(minutes: 5),
     );
     addTearDown(() => senderRepo.dispose());
@@ -135,7 +147,7 @@ void main() {
       }
     });
 
-    const size = 32 * 1024 * 1024;
+    const size = 64 * 1024;
     const count = 5;
     final files = <PickedFile>[];
     for (var i = 0; i < count; i++) {
@@ -144,7 +156,17 @@ void main() {
     }
     await senderRepo.sendFiles(files);
 
-    var queuedWhileOthersSending = 0;
+    await allAccepted.future.timeout(const Duration(seconds: 15));
+    // 不靠文件大小或 CI 吞吐制造排队，闸门始终占住前三个名额。
+    await Future<void>.delayed(const Duration(seconds: 7));
+    final held = senderRepo.currentTasks;
+    expect(held.where((t) => t.status == TransferStatus.failed), isEmpty);
+    expect(held.where((t) => t.status == TransferStatus.transferring).length,
+        AppConfig.maxConcurrentTransfers);
+    expect(held.where((t) => t.status == TransferStatus.waiting).length,
+        count - AppConfig.maxConcurrentTransfers);
+    gated.release();
+
     var maxSending = 0;
     String? firstFailure;
     for (var i = 0; i < 400; i++) {
@@ -152,12 +174,7 @@ void main() {
       final sending = tasks
           .where((task) => task.status == TransferStatus.transferring)
           .length;
-      final waiting = tasks
-          .where((task) => task.status == TransferStatus.waiting)
-          .length;
       if (sending > maxSending) maxSending = sending;
-      // 「有人在传、也有人还在等」= 确实出现了排队。
-      if (sending > 0 && waiting > 0) queuedWhileOthersSending++;
       for (final task in tasks) {
         if (task.status == TransferStatus.failed) {
           firstFailure ??= '${task.fileName}：${task.error}';
@@ -169,9 +186,6 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
 
-    // 前提：这次确实观察到了排队，否则这条用例等于空跑。
-    expect(queuedWhileOthersSending, greaterThan(0),
-        reason: '没观察到排队——并发上限可能没生效，这条用例就没意义了');
     expect(firstFailure, isNull, reason: '有文件被判失败了：$firstFailure');
     expect(maxSending, lessThanOrEqualTo(AppConfig.maxConcurrentTransfers),
         reason: '同时在传的文件数超过了并发上限');
@@ -1200,5 +1214,31 @@ class _GatedWriter extends IncomingFileWriter {
     if (!entered.isCompleted) entered.complete();
     await _gate.future;
     return super.close(fileId);
+  }
+}
+
+/// 默认直通，仅排队超时测试启用，避免为替换 transport 而断开重连。
+class _QueueGateTransport extends ChatTransportService {
+  bool hold = false;
+  final Completer<void> _gate = Completer<void>();
+  void release() {
+    hold = false;
+    if (!_gate.isCompleted) _gate.complete();
+  }
+
+  @override
+  Future<Result<SentFileSummary>> sendFileStream({
+    required int fileId,
+    required String path,
+    int? expectedSize,
+    String? session,
+    void Function(int sentBytes)? onProgress,
+    bool Function()? isCancelled,
+  }) async {
+    if (hold) await _gate.future;
+    return super.sendFileStream(
+      fileId: fileId, path: path, expectedSize: expectedSize,
+      session: session, onProgress: onProgress, isCancelled: isCancelled,
+    );
   }
 }
