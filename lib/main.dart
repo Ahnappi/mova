@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io';
+import 'config/app_config.dart';
 
 import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
@@ -27,6 +29,13 @@ Future<void> main() async {
   final logService = LogService(storageService);
   await logService.init();
   _setupLogging(logService);
+  await logService.append(
+    '${DateTime.now().toIso8601String()} [INFO] Startup: '
+    'diagnostics-v2 version=${AppConfig.versionLabel} pid=$pid '
+    'executable=${Platform.resolvedExecutable} log=${await logService.logFilePath()}',
+  ).timeout(const Duration(seconds: 2), onTimeout: () {
+    debugPrint('启动日志写入超过 2 秒，后台继续写入');
+  });
 
   runApp(
     MainApp(

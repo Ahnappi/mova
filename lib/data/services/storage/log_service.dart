@@ -38,6 +38,9 @@ class LogService {
     return _appendQueue;
   }
 
+  /// 等待此前已入队的记录；调用方决定最长等待时间。
+  Future<void> flush() => _appendQueue;
+
   Future<void> _appendLine(String line) async {
     try {
       final file = File(await logFilePath());
@@ -48,8 +51,15 @@ class LogService {
         mode: FileMode.append,
         flush: true,
       );
-    } catch (_) {
-      // 日志写失败绝不能影响主流程。
+    } catch (error) {
+      // 不再经 Logger 记录，以免写入失败递归产生更多日志。
+      try {
+        await File(p.join(Directory.systemTemp.path, 'mova-diagnostics.log'))
+            .writeAsString('${DateTime.now().toIso8601String()} 日志写入失败：$error\n$line\n',
+                mode: FileMode.append, flush: true);
+      } catch (_) {
+        // 两处都不可写时仍不能让日志错误终止应用。
+      }
     }
   }
 

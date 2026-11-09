@@ -187,6 +187,7 @@ List<SingleChildWidget> buildProviders({
       lazy: false,
       create: (context) {
         final shutdown = AppShutdown(
+          flushLogs: context.read<LogService>().flush,
           history: context.read(),
           chat: context.read(),
           transfer: context.read(),

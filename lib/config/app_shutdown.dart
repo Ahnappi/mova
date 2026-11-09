@@ -75,12 +75,14 @@ class AppShutdown with WidgetsBindingObserver, WindowListener {
     required TransferRepository transfer,
     WindowController window = const WindowManagerController(),
     ExitPrompt? prompt,
+    Future<void> Function()? flushLogs,
     Duration stepTimeout = const Duration(seconds: 5),
   })  : _history = history,
         _chat = chat,
         _transfer = transfer,
         _window = window,
         _prompt = prompt,
+        _flushLogs = flushLogs,
         _stepTimeout = stepTimeout;
 
   final HistoryRepository _history;
@@ -88,6 +90,7 @@ class AppShutdown with WidgetsBindingObserver, WindowListener {
   final TransferRepository _transfer;
   final WindowController _window;
   final ExitPrompt? _prompt;
+  final Future<void> Function()? _flushLogs;
   final Duration _stepTimeout;
   final Logger _log = Logger('AppShutdown');
 
@@ -358,6 +361,12 @@ class AppShutdown with WidgetsBindingObserver, WindowListener {
       _log.warning('解除关闭拦截失败：$e');
     });
     _log.info('窗口释放：开始 destroy，已耗时 ${clock.elapsedMilliseconds}ms');
+    // 窗口销毁可能立即结束进程，先让之前的诊断记录落盘。
+    try {
+      await _flushLogs?.call().timeout(const Duration(seconds: 1));
+    } catch (_) {
+      // 日志不是业务数据，不能因为日志慢而阻止退出。
+    }
     await _window.destroy().catchError((Object e) {
       _log.warning('关闭窗口失败：$e');
     });
