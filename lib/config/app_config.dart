@@ -7,15 +7,15 @@ class AppConfig {
   // ---------- 版本与更新 ----------
 
   /// 对外展示的版本名（x.y.z）。
-  static const String appVersion = '1.0.0';
+  static const String appVersion = '1.0.1';
 
   /// 版本号（整数，只增不减）。
   ///
   /// **判断新旧一律用它**，不要去解析 [appVersion]：按字典序比较的话
   /// '1.9.0' 会大于 '1.10.0'，正好得出相反的结论。
-  static const int appBuildNumber = 100;
+  static const int appBuildNumber = 101;
 
-  /// 界面上那一行版本文案，如 `1.0.0（100）`。
+  /// 界面上那一行版本文案，如 `1.0.1（101）`。
   static String get versionLabel => '$appVersion（$appBuildNumber）';
 
   /// 版本清单地址：一个静态 JSON 文件，点「检查更新」时拉一次。

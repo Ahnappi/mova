@@ -11,7 +11,7 @@
 ; CI 里直接 iscc 即可，不需要额外安装步骤。
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0"
+  #define MyAppVersion "1.0.1"
 #endif
 
 ; CI 会传成 mova_win_x64_setup，好跟其它产物对齐命名。
