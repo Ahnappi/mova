@@ -266,7 +266,9 @@ class AppShutdown with WidgetsBindingObserver, WindowListener {
         _exitWork = null;
         throw StateError('${outcome.reason} 请重试安装；连接已关闭。');
       }
+      _log.info('更新：退出收尾完成，开始启动安装辅助进程');
       await launchInstaller();
+      _log.info('更新：辅助进程就绪，开始释放窗口');
       await _releaseWindow();
     } finally {
       _installingUpdate = false;
@@ -285,23 +287,23 @@ class AppShutdown with WidgetsBindingObserver, WindowListener {
     //    退出期间这正是漏洞：保存还没完成的那几秒里，另一台设备仍能
     //    连进来建一个新会话，而此刻传输仓储可能已在释放、
     //    历史仓储可能已经关闭，状态就此错乱。
-    await _step('停止接收新连接', _chat.stopAcceptingConnections());
+    await _step('停止接收新连接', _chat.stopAcceptingConnections);
 
     // 2) 完成会话收尾：把进行中的会话标记为已结束，
     //    之后的历史变更不再入队（见 HistoryRepositoryLocal 的 _closed）。
     final active = _history.activeSessionId;
     if (active != null) {
-      await _step('结束会话', _history.endSession(active));
+      await _step('结束会话', () => _history.endSession(active));
     }
 
     // 3) 停止传输：后台落盘 isolate 与临时文件都要收干净。
-    await _step('停止传输', _transfer.dispose());
+    await _step('停止传输', _transfer.dispose);
 
     // 4) 等历史落盘：内部会等在跑的写入，再写最终快照。
     //    这一步没完成就必须阻断退出——超时只是「等不下去了」，
     //    写入本身还会继续跑，但进程一旦结束就再也没人等它；
     //    写盘失败则更明确（磁盘满 / 没权限 / 被占用），必须原样传给用户。
-    final saved = await _step('保存连接记录', _history.dispose());
+    final saved = await _step('保存连接记录', _history.dispose);
     if (!saved.done) {
       final reason = saved.timedOut
           ? '连接记录还没写完（磁盘较慢或正在被其它程序占用）。'
@@ -323,16 +325,21 @@ class AppShutdown with WidgetsBindingObserver, WindowListener {
   /// 区分两者是为了给用户一个说得通的提示：「还在写」和「写坏了」不是一回事。
   Future<({bool done, bool timedOut})> _step(
     String name,
-    Future<void> work,
+    Future<void> Function() work,
   ) async {
+    final clock = Stopwatch()..start();
+    _log.info('退出步骤开始：$name');
     try {
-      await work.timeout(_stepTimeout);
+      final pending = work();
+      _log.info('退出步骤已返回 Future：$name，同步耗时 ${clock.elapsedMilliseconds}ms');
+      await pending.timeout(_stepTimeout);
+      _log.info('退出步骤完成：$name，总耗时 ${clock.elapsedMilliseconds}ms');
       return (done: true, timedOut: false);
     } on TimeoutException catch (e) {
-      _log.warning('退出流程「$name」超时：$e');
+      _log.warning('退出流程「$name」超时，耗时 ${clock.elapsedMilliseconds}ms：$e');
       return (done: false, timedOut: true);
     } catch (e) {
-      _log.warning('退出流程「$name」失败：$e');
+      _log.warning('退出流程「$name」失败，耗时 ${clock.elapsedMilliseconds}ms：$e');
       return (done: false, timedOut: false);
     }
   }
@@ -345,11 +352,15 @@ class AppShutdown with WidgetsBindingObserver, WindowListener {
     if (_released) return;
     _released = true;
 
+    final clock = Stopwatch()..start();
+    _log.info('窗口释放：开始解除关闭拦截');
     await _window.setPreventClose(false).catchError((Object e) {
       _log.warning('解除关闭拦截失败：$e');
     });
+    _log.info('窗口释放：开始 destroy，已耗时 ${clock.elapsedMilliseconds}ms');
     await _window.destroy().catchError((Object e) {
       _log.warning('关闭窗口失败：$e');
     });
+    _log.info('窗口释放：destroy 已返回，总耗时 ${clock.elapsedMilliseconds}ms');
   }
 }

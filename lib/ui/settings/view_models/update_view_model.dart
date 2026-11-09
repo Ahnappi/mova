@@ -107,9 +107,11 @@ class UpdateViewModel extends ChangeNotifier {
   }
 
   Future<void> installUpdate() async {
+    _log.info('用户确认安装：ready=$readyToInstall, installing=$installing, disposed=$_disposed');
     final repository = _repository;
     if (repository == null || !readyToInstall || installing || _disposed) return;
     if (repository.hasActiveTransfers) {
+      if (!waitingForTransfers) _log.info('更新：等待活动文件任务结束');
       waitingForTransfers = true;
       _downloadHint = '等待文件任务结束后安装并重启（包含排队和等待确认的任务）。';
       _waitTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
@@ -127,6 +129,7 @@ class UpdateViewModel extends ChangeNotifier {
     try {
       await repository.install();
     } catch (e) {
+      _log.warning('自动安装失败', e);
       _downloadHint = '安装未完成：$e';
     } finally {
       installing = false;

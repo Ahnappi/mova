@@ -31,7 +31,14 @@ class LogService {
   }
 
   /// 追加一行日志；超过 [AppConfig.maxLogFileBytes] 时先轮转。
-  Future<void> append(String line) async {
+  Future<void> _appendQueue = Future<void>.value();
+
+  Future<void> append(String line) {
+    _appendQueue = _appendQueue.then((_) => _appendLine(line));
+    return _appendQueue;
+  }
+
+  Future<void> _appendLine(String line) async {
     try {
       final file = File(await logFilePath());
       await file.parent.create(recursive: true);

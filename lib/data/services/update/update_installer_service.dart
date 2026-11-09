@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
+import 'package:logging/logging.dart';
 
 import '../../../domain/models/update/app_update.dart';
 
 /// 系统层：流式下载、准备替换目录、启动独立安装进程。
 class UpdateInstallerService {
+  final Logger _log = Logger('UpdateInstallerService');
   HttpClient? _client;
   bool _cancelled = false;
 
@@ -148,11 +150,18 @@ fi
 
   Future<void> _startHelper(String executable, List<String> args, File ready) async {
     if (await ready.exists()) await ready.delete();
+    final clock = Stopwatch()..start();
+    _log.info('辅助进程：开始启动 $executable，ready=${ready.path}');
     final helper = await Process.start(executable, args, mode: ProcessStartMode.detached);
+    _log.info('辅助进程：已创建 pid=${helper.pid}，耗时 ${clock.elapsedMilliseconds}ms');
     for (var i = 0; i < 50; i++) {
-      if (await ready.exists()) return;
+      if (await ready.exists()) {
+        _log.info('辅助进程：ready 已出现，耗时 ${clock.elapsedMilliseconds}ms');
+        return;
+      }
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
+    _log.warning('辅助进程：等待 ready 超时，耗时 ${clock.elapsedMilliseconds}ms');
     Process.killPid(helper.pid);
     throw StateError('更新辅助进程未能启动，请重启 App 后重试');
   }
