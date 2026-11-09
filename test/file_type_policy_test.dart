@@ -28,6 +28,14 @@ void main() {
       }
     });
 
+    test('支持常见压缩包与归档格式', () {
+      for (final ext in ['zip', 'zipx', 'rar', '7z', 'tar', 'gz', 'tgz',
+        'bz2', 'tbz2', 'xz', 'txz', 'zst', 'lz4', 'cab', 'lzh', 'cpio']) {
+        expect(AppConfig.allowedFileExtensionSet.contains(ext), isTrue,
+            reason: '.$ext 应该可以发送');
+      }
+    });
+
     test('清单内部无重复、无空项', () {
       expect(
         AppConfig.videoExtensions.toSet().length,
@@ -45,8 +53,8 @@ void main() {
       }
     });
 
-    test('可执行/归档类文件不在白名单内', () {
-      const blocked = ['exe', 'dll', 'sh', 'bat', 'app', 'dmg', 'zip', 'msi'];
+    test('可执行文件与安装包不在白名单内', () {
+      const blocked = ['exe', 'dll', 'sh', 'bat', 'app', 'dmg', 'msi'];
       for (final ext in blocked) {
         expect(AppConfig.allowedFileExtensionSet.contains(ext), isFalse,
             reason: '.$ext 不应该被允许发送');

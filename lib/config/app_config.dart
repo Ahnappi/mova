@@ -381,6 +381,15 @@ class AppConfig {
     'xlsx',
   ];
 
+  /// 压缩包与归档文件；复合后缀按最后一段识别（如 tar.gz）。
+  static const List<String> archiveExtensions = [
+    'zip', 'zipx', 'rar', '7z', 'tar',
+    'gz', 'gzip', 'tgz', 'bz', 'bz2', 'bzip2', 'tbz', 'tbz2',
+    'xz', 'txz', 'lz', 'lzma', 'lzo', 'lz4', 'z', 'zst', 'zstd', 'tzst',
+    'cab', 'arj', 'lzh', 'lha', 'ace', 'alz', 'egg',
+    'cpio', 'ar', 'wim', 'swm', 'esd', 'xar', 'sit', 'sitx',
+  ];
+
   /// 能在应用内直接预览的图片扩展名。
   ///
   /// 只列 Flutter 内置解码器确实支持的类型：
@@ -398,9 +407,10 @@ class AppConfig {
     'ico',
   ];
 
-  /// 允许传输的文件扩展名（图片 / 视频 / 常见文档）。
+  /// 允许传输的文件扩展名（图片 / 视频 / 常见文档 / 压缩包）。
   static const List<String> allowedFileExtensions = [
     ...documentExtensions,
+    ...archiveExtensions,
     ...imageExtensions,
     ...videoExtensions,
   ];
@@ -410,7 +420,7 @@ class AppConfig {
       allowedFileExtensions.toSet();
 
   /// 用于界面提示的类型概览（避免把上百个扩展名罗列出来）。
-  static const String allowedSummary = '图片 / 视频 / PDF / Office 文档';
+  static const String allowedSummary = '图片 / 视频 / PDF / Office 文档 / 压缩包';
 
   /// 进度刷新间隔：高频分块时按此节流，避免每块都触发整页重建。
   static const Duration progressThrottle = Duration(milliseconds: 100);
