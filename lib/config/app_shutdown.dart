@@ -91,6 +91,7 @@ class AppShutdown with WidgetsBindingObserver, WindowListener {
   final Duration _stepTimeout;
   final Logger _log = Logger('AppShutdown');
 
+  bool _installingUpdate = false;
   bool _started = false;
   bool _exiting = false;
   Future<ExitOutcome>? _exitWork;
@@ -146,7 +147,7 @@ class AppShutdown with WidgetsBindingObserver, WindowListener {
   /// 保存没完成时**不关窗口**：留在应用里，由用户决定重试还是放弃。
   @override
   void onWindowClose() {
-    unawaited(_closeWindowAfterExit());
+    if (!_installingUpdate) unawaited(_closeWindowAfterExit());
   }
 
   Future<void> _closeWindowAfterExit() async {
@@ -233,6 +234,7 @@ class AppShutdown with WidgetsBindingObserver, WindowListener {
   /// 应用继续运行，用户稍后可以再试。
   @override
   Future<AppExitResponse> didRequestAppExit() async {
+    if (_installingUpdate) return AppExitResponse.cancel;
     final allowed = await _confirmBeforeExit();
     return allowed ? AppExitResponse.exit : AppExitResponse.cancel;
   }
@@ -247,6 +249,27 @@ class AppShutdown with WidgetsBindingObserver, WindowListener {
       unawaited(_history.flush().catchError((Object e) {
         _log.warning('切到后台时的落盘失败：$e');
       }));
+    }
+  }
+
+  /// 更新专用出口：同一个同步调用内检查任务并封存连接。
+  /// 保存失败不启动安装器，也不允许强制丢弃记录。
+  Future<void> installUpdate(Future<void> Function() launchInstaller) async {
+    if (_confirmWork != null || _released || _installingUpdate) throw StateError('应用正在退出');
+    if (_transfer.currentTasks.any((task) => task.isActive)) {
+      throw StateError('还有未结束的文件任务，请等待完成或取消任务');
+    }
+    _installingUpdate = true;
+    try {
+      final outcome = await prepareExit();
+      if (outcome is ExitBlocked) {
+        _exitWork = null;
+        throw StateError('${outcome.reason} 请重试安装；连接已关闭。');
+      }
+      await launchInstaller();
+      await _releaseWindow();
+    } finally {
+      _installingUpdate = false;
     }
   }
 

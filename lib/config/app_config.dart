@@ -31,11 +31,11 @@ class AppConfig {
   /// }
   /// ```
   /// `versionCode` 比 [appBuildNumber] 大才提示更新；`url` 是下载页
-  /// （不是安装包直链：macOS 给 DMG、Windows 给安装包，让页面去分派）。
+  /// （用于手动下载兜底）；assets 按平台提供 HTTPS 安装包地址与字节大小。
   ///
-  /// 发新版时改仓库里这个文件即可，不用重新发布应用。
+  /// 发布流水线在两平台构建完成后生成并上传 version.json。
   static const String updateManifestUrl =
-      'https://raw.githubusercontent.com/ahnappi/mova/main/version.json';
+      'https://github.com/Ahnappi/mova/releases/latest/download/version.json';
 
   /// 兜底下载页：清单里没给 `url`（或给的不是一个能打开的网页）时用它。
   ///

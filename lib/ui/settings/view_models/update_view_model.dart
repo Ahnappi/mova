@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+import '../../../data/repositories/update/update_repository.dart';
 import 'package:logging/logging.dart';
 
 import '../../../config/app_config.dart';
@@ -41,8 +44,95 @@ class UpdateViewModel extends ChangeNotifier {
   UpdateViewModel({
     required UpdateService updateService,
     FileOpenerService? opener,
-  })  : _updateService = updateService,
+    UpdateRepository? updateRepository,
+  })  : _repository = updateRepository,
+        _updateService = updateService,
         _opener = opener ?? FileOpenerService();
+
+  final UpdateRepository? _repository;
+  bool downloading = false;
+  bool installing = false;
+  bool readyToInstall = false;
+  bool waitingForTransfers = false;
+  double? downloadProgress;
+  Timer? _waitTimer;
+  bool _disposed = false;
+  bool get updateBusy => downloading || installing || waitingForTransfers;
+
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _waitTimer?.cancel();
+    _repository?.cancelDownload();
+    super.dispose();
+  }
+
+  Future<void> downloadUpdate() async {
+    if (updateBusy || _update == null) return;
+    final repository = _repository;
+    if (repository == null) { await openDownloadPage(); return; }
+    downloading = true;
+    readyToInstall = false;
+    downloadProgress = null;
+    _downloadHint = '正在下载更新，文件传输可以继续。';
+    notifyListeners();
+    try {
+      await repository.download(_update!, (value) {
+        downloadProgress = value;
+        notifyListeners();
+      });
+      readyToInstall = true;
+      _downloadHint = '下载完成。点击安装并重启；有文件任务时将等待它们结束。';
+    } catch (e) {
+      _downloadHint = '下载未完成：$e';
+    } finally {
+      downloading = false;
+      notifyListeners();
+    }
+  }
+
+  void cancelUpdate() {
+    if (installing) return;
+    _repository?.cancelDownload();
+    waitingForTransfers = false;
+    _waitTimer?.cancel();
+    _waitTimer = null;
+    _downloadHint = '已取消自动安装，可以稍后重试。';
+    notifyListeners();
+  }
+
+  Future<void> installUpdate() async {
+    final repository = _repository;
+    if (repository == null || !readyToInstall || installing || _disposed) return;
+    if (repository.hasActiveTransfers) {
+      waitingForTransfers = true;
+      _downloadHint = '等待文件任务结束后安装并重启（包含排队和等待确认的任务）。';
+      _waitTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!repository.hasActiveTransfers) unawaited(installUpdate());
+      });
+      notifyListeners();
+      return;
+    }
+    _waitTimer?.cancel();
+    _waitTimer = null;
+    waitingForTransfers = false;
+    installing = true;
+    _downloadHint = '正在准备安装并保存记录，请稍候…';
+    notifyListeners();
+    try {
+      await repository.install();
+    } catch (e) {
+      _downloadHint = '安装未完成：$e';
+    } finally {
+      installing = false;
+      notifyListeners();
+    }
+  }
 
   final UpdateService _updateService;
   final FileOpenerService _opener;
@@ -77,7 +167,7 @@ class UpdateViewModel extends ChangeNotifier {
 
   /// 检查一次更新。正在检查时重复调用会被忽略。
   Future<void> check() async {
-    if (_status == UpdateCheckStatus.checking) return;
+    if (_status == UpdateCheckStatus.checking || updateBusy || readyToInstall) return;
 
     _status = UpdateCheckStatus.checking;
     _detail = null;

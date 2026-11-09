@@ -10,6 +10,7 @@ class AppUpdate {
     required this.downloadUrl,
     this.notes = '',
     this.mandatory = false,
+    this.assets = const {},
   });
 
   /// 新版本的名字（x.y.z），只用于展示。
@@ -23,6 +24,8 @@ class AppUpdate {
 
   /// 更新说明。
   final String notes;
+
+  final Map<String, UpdateAsset> assets;
 
   /// 是否「强烈建议更新」（比如修了会导致传输出错的问题）。
   ///
@@ -75,6 +78,26 @@ class AppUpdate {
       downloadUrl: url is String ? url : '',
       notes: notes is String ? notes : '',
       mandatory: mandatory == true,
+      assets: {
+        if (raw['assets'] is Map)
+          for (final entry in (raw['assets'] as Map).entries)
+            if (entry.key is String && UpdateAsset.tryParse(entry.value) != null)
+              entry.key as String: UpdateAsset.tryParse(entry.value)!,
+      },
     );
+  }
+}
+
+/// 平台专用更新包。size 用于检测截断下载，不代表签名验证。
+class UpdateAsset {
+  const UpdateAsset({required this.url, required this.size});
+  final String url;
+  final int size;
+
+  static UpdateAsset? tryParse(Object? raw) {
+    if (raw is! Map || raw['url'] is! String || raw['size'] is! int) return null;
+    final uri = Uri.tryParse(raw['url'] as String);
+    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty || raw['size'] <= 0) return null;
+    return UpdateAsset(url: uri.toString(), size: raw['size'] as int);
   }
 }

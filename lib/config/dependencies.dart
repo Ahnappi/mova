@@ -5,6 +5,8 @@ import 'package:provider/provider.dart';
 import 'package:provider/single_child_widget.dart';
 
 import 'app_shutdown.dart';
+import '../data/repositories/update/update_repository.dart';
+import '../data/services/update/update_installer_service.dart';
 import 'window_controller.dart';
 import '../data/repositories/chat/chat_repository.dart';
 import '../data/repositories/chat/chat_repository_local.dart';
@@ -198,6 +200,15 @@ List<SingleChildWidget> buildProviders({
       },
     ),
 
+    Provider(
+      create: (context) => UpdateRepository(
+        installer: UpdateInstallerService(),
+        transfer: context.read(),
+        installAndExit: context.read<AppShutdown>().installUpdate,
+      ),
+      dispose: (_, repository) => repository.cancelDownload(),
+    ),
+
     // ViewModel 层
     //
     // 顺序是有讲究的：**ConnectionViewModel 必须排在 SettingsViewModel 前面**。
@@ -229,6 +240,7 @@ List<SingleChildWidget> buildProviders({
     ),
     ChangeNotifierProvider(
       create: (context) => UpdateViewModel(
+        updateRepository: context.read(),
         updateService: context.read(),
         opener: context.read(),
       ),

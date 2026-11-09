@@ -236,6 +236,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          draft: true
           files: |
             ${{ steps.locate.outputs.dir }}/dist/${{ env.WIN_ASSET }}.zip
             ${{ steps.locate.outputs.dir }}/dist/mova_win_x64_setup.exe
@@ -311,6 +312,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          draft: true
           files: |
             ${{ steps.locate.outputs.dir }}/dist/${{ env.MAC_ASSET }}.zip
             ${{ steps.locate.outputs.dir }}/dist/${{ env.MAC_ASSET }}.dmg
@@ -321,3 +323,22 @@ jobs:
 #   把 build-macos 改成 matrix：runs-on: [macos-latest, macos-13]（macos-13 是 Intel），
 #   并把 MAC_ASSET 按 runner 分别设为 mova_mac_arm64 / mova_mac_x64。
 # ---------------------------------------------------------------------------
+
+  # 两个平台的包均上传后才发布，客户端不会看到缺包的新版。
+  publish-update:
+    needs: [build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: 生成更新清单并发布
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p update-assets
+          gh release download "$RELEASE_TAG" --dir update-assets --pattern mova_win_x64_setup.exe --pattern mova_mac_arm64.zip
+          script=$(find . -path '*/tool/publish_update.py' -not -path '*/build/*' | head -n 1)
+          python3 "$script" update-assets "$GITHUB_REPOSITORY" "$RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" update-assets/version.json --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

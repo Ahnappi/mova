@@ -399,7 +399,7 @@ class _VersionSection extends StatelessWidget {
         Row(
           children: [
             PressableScale(
-              onTap: vm.isChecking ? null : () => vm.check(),
+              onTap: vm.isChecking || vm.updateBusy || vm.readyToInstall ? null : () => vm.check(),
               child: Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
@@ -495,16 +495,34 @@ class _UpdateAvailable extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 10),
+          if (vm.downloading) ...[
+            LinearProgressIndicator(value: vm.downloadProgress),
+            const SizedBox(height: 8),
+          ],
           PressableScale(
-            onTap: () => vm.openDownloadPage(),
+            onTap: vm.updateBusy ? null : () async {
+              if (!vm.readyToInstall) { await vm.downloadUpdate(); return; }
+              final accepted = await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('安装更新并重启？'),
+                  content: const Text('有未结束的文件任务时，将等待它们完成。安装期间 App 会退出，完成后重新打开。'),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('稍后')),
+                    TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('安装并重启')),
+                  ],
+                ),
+              );
+              if (accepted == true && context.mounted) await vm.installUpdate();
+            },
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: BoxDecoration(
                 color: AppColors.primary,
                 borderRadius: BorderRadius.circular(AppDimens.radiusPill),
               ),
-              child: const Text(
-                '打开下载页',
+              child: Text(
+                vm.installing ? '正在安装…' : vm.downloading ? '正在下载…' : vm.waitingForTransfers ? '等待传输结束…' : vm.readyToInstall ? '安装并重启' : '下载更新',
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 13,
@@ -513,6 +531,9 @@ class _UpdateAvailable extends StatelessWidget {
               ),
             ),
           ),
+          if (vm.downloading || vm.waitingForTransfers)
+            TextButton(onPressed: vm.cancelUpdate, child: const Text('取消更新')),
+          TextButton(onPressed: vm.openDownloadPage, child: const Text('打开下载页')),
           // 地址缺失（已退回发布页）或浏览器没打开时，提示留在 downloadHint 里：
           // 用户至少能看到发生了什么，还能手动复制地址，
           // 而不是对着一个点了没反应的按钮发愣。
