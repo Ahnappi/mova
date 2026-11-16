@@ -62,7 +62,7 @@ import 'transfer_repository.dart';
 /// - 读写都按块进行（[AppConfig.fileChunkSize]），从不整体载入内存；
 /// - 发送端 socket 有背压，接收端落盘在后台 isolate 且有有界队列；
 /// - 帧解析自己维护缓冲，避免随文件增大而线性增长的拷贝。
-class TransferRepositoryLocal implements TransferRepository {
+class TransferRepositoryLocal implements TransferRepository, PausableTransferRepository {
   /// [offerTimeout] / [stallTimeout] / [ackTimeout] 可被测试覆盖，
   /// 默认是 [AppConfig] 里的值（真实场景是分钟级，测试里等不起）。
   TransferRepositoryLocal(
@@ -936,10 +936,38 @@ class TransferRepositoryLocal implements TransferRepository {
 
   // ---------- 事件处理 ----------
 
+  @override
+  bool get supportsPause => _transport.remoteProtocolVersion >= 4;
+
+  @override
+  void setPaused(int fileId, bool paused) {
+    if (!supportsPause) return;
+    if (!_applyPause(fileId, paused, local: true)) return;
+    _transport.sendFilePause(fileId, paused);
+  }
+
+  bool _applyPause(int id, bool paused, {required bool local}) {
+    final task = _tasks[id];
+    if (task == null) return false;
+    final acceptedQueue = task.direction == TransferDirection.sending &&
+        task.status == TransferStatus.waiting && _readyQueue.contains(id);
+    if (task.status != TransferStatus.transferring && !acceptedQueue) return false;
+    final updated = local ? task.copyWith(pausedLocally: paused)
+        : task.copyWith(pausedRemotely: paused);
+    _tasks[id] = updated;
+    _transport.setFilePaused(id, updated.pausedLocally || updated.pausedRemotely);
+    _lastProgressAt[id] = DateTime.now();
+    _speedStates.remove(id);
+    _emit(force: true);
+    return true;
+  }
+
   void _onEvent(TransferEvent event) {
     if (_isStaleEvent()) return;
 
     switch (event) {
+      case PauseReceived():
+        if (supportsPause) _applyPause(event.fileId, event.paused, local: false);
       case OfferReceived():
         _tasks[event.fileId] = TransferTask(
           id: event.fileId,
@@ -1397,7 +1425,7 @@ class TransferRepositoryLocal implements TransferRepository {
     }
 
     for (final task in _tasks.values.toList()) {
-      if (!task.isActive) continue;
+      if (!task.isActive || task.isPaused) continue;
 
       // 排队中：请求还没发出去，对端根本不知道它存在，不计时。
       if (task.status == TransferStatus.queued) continue;
@@ -1520,6 +1548,7 @@ class TransferRepositoryLocal implements TransferRepository {
   }
 
   void _finish(int id, TransferStatus status, {String? error, String? localPath}) {
+    _transport.setFilePaused(id, false);
     final task = _tasks[id];
     if (task == null) return;
 

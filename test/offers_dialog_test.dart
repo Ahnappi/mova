@@ -101,6 +101,25 @@ void main() {
     expect(find.text('「MacBook」发来 3 个文件'), findsNothing);
   });
 
+  for (final action in ['接收 3 个', '全部拒绝']) {
+    testWidgets('$action 后退场动画期间集合清空，不会退出主页', (tester) async {
+      await openPanel(tester);
+      await tester.tap(find.text(action));
+      // 精确制造 pop 后、退场动画结束前待接收集合清空的时序。
+      repo.emit([]);
+      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('打开面板'), findsOneWidget);
+      // 主页面仍可操作，而不仅仅是还留着一帧画面。
+      repo.emit([offer(1, 'again.bin')]);
+      await tester.pump();
+      await tester.tap(find.text('打开面板'));
+      await tester.pumpAndSettle();
+      expect(find.text('again.bin'), findsOneWidget);
+    });
+  }
+
   testWidgets('全部处理完之后面板自己关闭', (tester) async {
     await openPanel(tester);
 

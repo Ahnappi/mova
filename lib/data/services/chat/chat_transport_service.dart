@@ -480,6 +480,17 @@ class ChatTransportService {
   /// - [isCancelled] 每块前检查一次，true 则立即停止（用于中途取消）；
   /// - 成功时返回实际读出的字节数与 CRC32，供收尾时声明给对端核对；
   /// - 返回 `Error` 表示失败或被取消。
+  final Set<int> _pausedFiles = {};
+
+  void setFilePaused(int id, bool paused) {
+    if (paused) { _pausedFiles.add(id); } else { _pausedFiles.remove(id); }
+  }
+
+  void sendFilePause(int id, bool paused) {
+    _writeInSession(encodeJsonFrame(MessageType.filePause,
+        {'id': id, 'paused': paused}), _sessionId);
+  }
+
   Future<Result<SentFileSummary>> sendFileStream({
     required int fileId,
     required String path,
@@ -523,6 +534,12 @@ class ChatTransportService {
           return Result.error(Exception('已取消发送'));
         }
 
+        while (_pausedFiles.contains(fileId)) {
+          if ((isCancelled?.call() ?? false) || !identical(_socket, socket) || _sessionId != bound) {
+            return Result.error(Exception('暂停期间任务已结束或连接已切换'));
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
         final read = await raf.readInto(chunk);
         if (read <= 0) break;
 
@@ -591,10 +608,12 @@ class ChatTransportService {
 
   /// 断开当前会话（监听仍保留，对方可再次连入）。
   Future<void> disconnect() async {
+    _pausedFiles.clear();
     _stopKeepAlive();
+    // 先销毁连接以终止待处理 I/O，再等待订阅清理；退出无需排空文件数据。
+    _socket?.destroy();
     await _socketSub?.cancel();
     _socketSub = null;
-    _socket?.destroy();
     _socket = null;
     _sessionId = null;
     _remoteProtocolVersion = 1;
@@ -810,6 +829,7 @@ class ChatTransportService {
   }
 
   void _onSocketClosed() {
+    _pausedFiles.clear();
     _stopKeepAlive();
     // 到这一步订阅已经结束（onDone 自然结束 / cancelOnError 已取消），
     // 把引用清掉，免得之后 pauseInbound / resumeInbound 打在死对象上。
@@ -931,6 +951,11 @@ class ChatTransportService {
               reason: json['reason'] as String?,
             ),
           );
+        case MessageType.filePause:
+          final json = frame.json;
+          if (json['id'] is int && json['paused'] is bool) {
+            _transferController.add(PauseReceived(json['id'] as int, json['paused'] as bool));
+          }
         case MessageType.ping:
           // 什么都不用做：能收到这一帧本身就证明对端还活着，
           // 「最近收到字节的时间」已在 _feed 里刷新过了。

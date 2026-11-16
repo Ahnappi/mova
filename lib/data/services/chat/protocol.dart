@@ -46,7 +46,8 @@ enum MessageType {
   /// 连续几个周期一个字节都没收到，就判定连接已经死了。
   ///
   /// 不认识这个类型的老对端会按 :277 的规则直接跳过，不会断连。
-  ping(10);
+  ping(10),
+  filePause(11);
 
   const MessageType(this.value);
 

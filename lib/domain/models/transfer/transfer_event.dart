@@ -88,3 +88,10 @@ class CancelReceived extends TransferEvent {
   final int fileId;
   final String? reason;
 }
+
+/// 仅更新发出此帧的一方的暂停意图，两端都解除暂停才继续。
+class PauseReceived extends TransferEvent {
+  PauseReceived(this.fileId, this.paused);
+  final int fileId;
+  final bool paused;
+}

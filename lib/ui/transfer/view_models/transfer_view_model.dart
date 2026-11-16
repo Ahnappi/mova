@@ -356,6 +356,19 @@ class TransferViewModel extends ChangeNotifier {
 
   Future<void> reject(int fileId) => _transferRepository.reject(fileId);
 
+  bool get supportsPause {
+    final repo = _transferRepository;
+    return repo is PausableTransferRepository &&
+        (repo as PausableTransferRepository).supportsPause;
+  }
+
+  void setPaused(int id, bool paused) {
+    final repo = _transferRepository;
+    if (repo is PausableTransferRepository) {
+      (repo as PausableTransferRepository).setPaused(id, paused);
+    }
+  }
+
   Future<void> cancel(int fileId) => _transferRepository.cancel(fileId);
 
   // ---------- 待接收面板：勾选与批量处理 ----------

@@ -87,3 +87,9 @@ abstract class TransferRepository {
   /// 释放资源。
   Future<void> dispose();
 }
+
+/// 可选能力接口，旧实现不必支持连接内暂停。
+abstract interface class PausableTransferRepository {
+  bool get supportsPause;
+  void setPaused(int fileId, bool paused);
+}

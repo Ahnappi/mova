@@ -46,6 +46,16 @@ Future<bool> showIncomingOffersDialog(
   return result ?? false;
 }
 
+/// pop 后退场动画期间 context 仍 mounted，但路由已不在栈顶。
+/// 此时再次 pop 会关闭下面的主页，因此所有关闭入口都核对路由归属。
+bool _closeOffersDialog(BuildContext context, bool result) {
+  if (!context.mounted) return false;
+  final route = ModalRoute.of(context);
+  if (route == null || !route.isCurrent || !route.isActive) return false;
+  Navigator.of(context).pop(result);
+  return true;
+}
+
 class _IncomingOffersDialog extends StatelessWidget {
   const _IncomingOffersDialog({required this.peerName});
 
@@ -62,7 +72,10 @@ class _IncomingOffersDialog extends StatelessWidget {
     // 全部处理完了（或者对方撤回了请求），面板自己退场。
     if (signature.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (context.mounted) Navigator.of(context).pop(true);
+        if (context.mounted &&
+            context.read<TransferViewModel>().offerSelectionSignature.isEmpty) {
+          _closeOffersDialog(context, true);
+        }
       });
       return const SizedBox.shrink();
     }
@@ -149,7 +162,7 @@ class _Header extends StatelessWidget {
               padding: EdgeInsets.zero,
               iconSize: 18,
               tooltip: '稍后处理',
-              onPressed: () => Navigator.of(context).pop(false),
+              onPressed: () => _closeOffersDialog(context, false),
               icon: const Icon(Icons.close),
             ),
           ),
@@ -371,7 +384,7 @@ class _Footer extends StatelessWidget {
   /// 面板挡在上面既碍事，也会让「点完没反应」的窗口变长。
   void _accept(BuildContext context, {bool pickDir = false}) {
     final transfer = context.read<TransferViewModel>();
-    Navigator.of(context).pop(true);
+    if (!_closeOffersDialog(context, true)) return;
 
     if (pickDir) {
       unawaited(transfer.acceptSelectedWithDirectoryPicker());
@@ -382,7 +395,7 @@ class _Footer extends StatelessWidget {
 
   void _rejectAll(BuildContext context) {
     final transfer = context.read<TransferViewModel>();
-    Navigator.of(context).pop(true);
+    if (!_closeOffersDialog(context, true)) return;
     unawaited(transfer.rejectPending());
   }
 }

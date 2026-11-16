@@ -65,6 +65,8 @@ class TransferTask {
     this.speedBytesPerSecond = 0,
     this.averageSpeedBytesPerSecond = 0,
     this.sessionId = '',
+    this.pausedLocally = false,
+    this.pausedRemotely = false,
     this.batchId,
     this.batchIndex,
     this.batchCount,
@@ -89,6 +91,9 @@ class TransferTask {
   final int totalBytes;
   final TransferDirection direction;
   final TransferStatus status;
+  final bool pausedLocally;
+  final bool pausedRemotely;
+  bool get isPaused => status == TransferStatus.transferring && (pausedLocally || pausedRemotely);
 
   /// 已传输字节数。
   final int transferredBytes;
@@ -143,6 +148,8 @@ class TransferTask {
   bool get isFinished => !isActive;
 
   TransferTask copyWith({
+    bool? pausedLocally,
+    bool? pausedRemotely,
     int? transferredBytes,
     TransferStatus? status,
     String? localPath,
@@ -157,6 +164,8 @@ class TransferTask {
       totalBytes: totalBytes,
       direction: direction,
       status: status ?? this.status,
+      pausedLocally: pausedLocally ?? this.pausedLocally,
+      pausedRemotely: pausedRemotely ?? this.pausedRemotely,
       // 必须带上：否则每帧进度更新都会把创建时间重置为纪元，
       // 导致聊天流里的时间线错乱、时间显示为 1970。
       createdAt: createdAt,

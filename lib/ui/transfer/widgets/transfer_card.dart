@@ -24,6 +24,7 @@ class TransferCard extends StatelessWidget {
     required this.onReject,
     required this.onCancel,
     required this.onRetry,
+    this.onTogglePause,
   });
 
   final TransferTask task;
@@ -34,6 +35,7 @@ class TransferCard extends StatelessWidget {
 
   /// 重新发送（只有发送失败时才在卡片上出现）。
   final VoidCallback onRetry;
+  final VoidCallback? onTogglePause;
 
   /// 发送方靠右、接收方靠左（与消息气泡同向，方便区分）。
   bool get _isSending => task.direction == TransferDirection.sending;
@@ -104,6 +106,12 @@ class TransferCard extends StatelessWidget {
                         ),
                       ),
                     ),
+                    if (onTogglePause != null && task.status == TransferStatus.transferring)
+                      IconButton(
+                        tooltip: task.pausedLocally ? '继续传输' : '暂停传输',
+                        onPressed: onTogglePause,
+                        icon: Icon(task.pausedLocally ? Icons.play_arrow : Icons.pause, size: 18),
+                      ),
                     if (inProgress)
                       _CancelButton(onCancel: onCancel),
                   ],
@@ -128,7 +136,9 @@ class TransferCard extends StatelessWidget {
                         // 接收端「已同意、但一个字节都还没到」：多半是在等
                         // 对端腾出并发名额（最多同时传 3 个）。写清楚，
                         // 免得用户以为卡住了。
-                        task.status == TransferStatus.transferring &&
+                        task.isPaused
+                            ? (task.pausedLocally ? '已暂停' : '对方已暂停，等待对方继续')
+                            : task.status == TransferStatus.transferring &&
                                 _isOffer &&
                                 task.transferredBytes == 0
                             ? '已同意，等对方轮到这个文件…'
@@ -238,7 +248,7 @@ class TransferCard extends StatelessWidget {
   }
 
   String _etaText(TransferTask task) {
-    if (task.status != TransferStatus.transferring) return '';
+    if (task.isPaused || task.status != TransferStatus.transferring) return '';
     final eta = task.etaSeconds;
     if (eta == null) return '正在估算剩余时间…';
     return formatEta(eta);
