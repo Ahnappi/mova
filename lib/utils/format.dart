@@ -11,7 +11,7 @@ String formatBytes(int bytes) {
 
 /// 速度格式化（字节/秒）。
 String formatSpeed(int bytesPerSecond) {
-  if (bytesPerSecond <= 0) return '—';
+  if (bytesPerSecond <= 0) return '0 B/s';
   return '${formatBytes(bytesPerSecond)}/s';
 }
 

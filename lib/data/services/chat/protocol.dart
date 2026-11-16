@@ -47,7 +47,8 @@ enum MessageType {
   ///
   /// 不认识这个类型的老对端会按 :277 的规则直接跳过，不会断连。
   ping(10),
-  filePause(11);
+  filePause(11),
+  fileProgress(12);
 
   const MessageType(this.value);
 

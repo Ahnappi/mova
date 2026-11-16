@@ -58,7 +58,7 @@ class AppConfig {
   /// v1：只有 offer / accept / chunk / end / cancel，发送端推完就算完成；
   /// v2：end 帧带上字节数与 CRC32，新增 fileDone 回执帧；
   /// v3：新增 ping 心跳帧，并在 hello 里带 `ka` 能力位。
-  static const int protocolVersion = 4;
+  static const int protocolVersion = 5;
 
   /// 支持「收尾回执」的最低协议版本。
   ///

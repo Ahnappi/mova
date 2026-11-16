@@ -486,6 +486,11 @@ class ChatTransportService {
     if (paused) { _pausedFiles.add(id); } else { _pausedFiles.remove(id); }
   }
 
+  void sendFileProgress(int id, int bytes, int speed) {
+    _writeInSession(encodeJsonFrame(MessageType.fileProgress,
+        {'id': id, 'bytes': bytes, 'speed': speed}), _sessionId);
+  }
+
   void sendFilePause(int id, bool paused) {
     _writeInSession(encodeJsonFrame(MessageType.filePause,
         {'id': id, 'paused': paused}), _sessionId);
@@ -951,6 +956,12 @@ class ChatTransportService {
               reason: json['reason'] as String?,
             ),
           );
+        case MessageType.fileProgress:
+          final json = frame.json;
+          if (json['id'] is int && json['bytes'] is int && json['speed'] is int) {
+            _transferController.add(ProgressReceived(json['id'] as int,
+                json['bytes'] as int, json['speed'] as int));
+          }
         case MessageType.filePause:
           final json = frame.json;
           if (json['id'] is int && json['paused'] is bool) {

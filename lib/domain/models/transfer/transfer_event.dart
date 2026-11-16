@@ -95,3 +95,11 @@ class PauseReceived extends TransferEvent {
   final int fileId;
   final bool paused;
 }
+
+/// 接收方统一计算的已接收字节与窗口速度，不代表最终保存完成。
+class ProgressReceived extends TransferEvent {
+  ProgressReceived(this.fileId, this.bytes, this.bytesPerSecond);
+  final int fileId;
+  final int bytes;
+  final int bytesPerSecond;
+}

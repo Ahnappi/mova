@@ -11,6 +11,7 @@ import '../../../domain/models/transfer/picked_file.dart';
 import '../../../domain/models/transfer/transfer_event.dart';
 import '../../../domain/models/transfer/transfer_task.dart';
 import '../../../utils/result.dart';
+import '../../../utils/transfer_speed.dart';
 import '../../services/chat/chat_transport_service.dart';
 import '../../services/transfer/file_storage_service.dart';
 import '../../services/transfer/incoming_file_writer.dart';
@@ -91,7 +92,7 @@ class TransferRepositoryLocal implements TransferRepository, PausableTransferRep
     _sessionId = _transport.sessionId ?? '';
     unawaited(_writer.start());
     // 看护计时器：统一处理「等对端应答」「传输停滞」「等回执」三类超时。
-    _watchdog = Timer.periodic(const Duration(seconds: 1), (_) => _checkTimeouts());
+    _watchdog = Timer.periodic(const Duration(seconds: 1), (_) { _refreshSpeeds(); _checkTimeouts(); });
   }
 
   @override
@@ -142,7 +143,9 @@ class TransferRepositoryLocal implements TransferRepository, PausableTransferRep
   /// 准备令牌：区分「同一次准备」，防止迟到的准备结果覆盖新的流程。
   int _prepareToken = 0;
 
-  final Map<int, _SpeedState> _speedStates = <int, _SpeedState>{};
+  final Map<int, TransferSpeed> _speedStates = {};
+  final Stopwatch _speedClock = Stopwatch()..start();
+  final Map<int, Duration> _reportedAt = {};
   final Map<int, Completer<void>> _ackWaiters = <int, Completer<void>>{};
   final Map<int, DateTime> _waitingSince = <int, DateTime>{};
   final Map<int, DateTime> _lastProgressAt = <int, DateTime>{};
@@ -954,10 +957,11 @@ class TransferRepositoryLocal implements TransferRepository, PausableTransferRep
     if (task.status != TransferStatus.transferring && !acceptedQueue) return false;
     final updated = local ? task.copyWith(pausedLocally: paused)
         : task.copyWith(pausedRemotely: paused);
-    _tasks[id] = updated;
+    _tasks[id] = updated.copyWith(speedBytesPerSecond: 0, averageSpeedBytesPerSecond: 0);
     _transport.setFilePaused(id, updated.pausedLocally || updated.pausedRemotely);
     _lastProgressAt[id] = DateTime.now();
     _speedStates.remove(id);
+    _reportedAt.remove(id);
     _emit(force: true);
     return true;
   }
@@ -966,6 +970,18 @@ class TransferRepositoryLocal implements TransferRepository, PausableTransferRep
     if (_isStaleEvent()) return;
 
     switch (event) {
+      case ProgressReceived():
+        final task = _tasks[event.fileId];
+        if (_transport.remoteProtocolVersion >= 5 && task != null && task.isActive &&
+            task.direction == TransferDirection.sending && event.bytes >= task.transferredBytes &&
+            event.bytes <= task.totalBytes && event.bytesPerSecond >= 0) {
+          if (event.bytes > task.transferredBytes) _lastProgressAt[task.id] = DateTime.now();
+          _reportedAt[task.id] = _speedClock.elapsed;
+          final speed = task.isPaused ? 0 : event.bytesPerSecond;
+          _tasks[task.id] = task.copyWith(transferredBytes: event.bytes,
+              speedBytesPerSecond: speed, averageSpeedBytesPerSecond: speed.toDouble());
+          _emit(force: true);
+        }
       case PauseReceived():
         if (supportsPause) _applyPause(event.fileId, event.paused, local: false);
       case OfferReceived():
@@ -1382,6 +1398,7 @@ class TransferRepositoryLocal implements TransferRepository, PausableTransferRep
     _tasks.clear();
     _incoming.clear();
     _speedStates.clear();
+    _reportedAt.clear();
     _waitingSince.clear();
     _lastProgressAt.clear();
     _cancelRequests.clear();
@@ -1495,39 +1512,41 @@ class TransferRepositoryLocal implements TransferRepository, PausableTransferRep
 
   void _updateProgress(int id, int transferredBytes) {
     final task = _tasks[id];
-    if (task == null) return;
-
-    // 只要有字节在动就刷新「最后进展时间」，停滞计时器随之归零。
+    if (task == null || !task.isActive) return;
     _lastProgressAt[id] = DateTime.now();
-
-    final now = DateTime.now();
-    var speed = task.speedBytesPerSecond;
-    var average = task.averageSpeedBytesPerSecond;
-
-    final state = _speedStates[id] ??= _SpeedState(now, task.transferredBytes);
-    final elapsedMs = now.difference(state.at).inMilliseconds;
-    if (elapsedMs >= 500) {
-      final delta = transferredBytes - state.bytes;
-      final instant = delta * 1000 / elapsedMs;
-      speed = instant.round();
-      // 指数滑动平均：单独维护一个平滑值供「剩余时间」使用。
-      // 瞬时速度每 500ms 采样一次、波动可达数倍，直接用它算 ETA
-      // 会让界面上的倒计时剧烈跳动，观感比「不给时间」还差。
-      average = average <= 0
-          ? instant
-          : average * (1 - AppConfig.speedEmaAlpha) +
-              instant * AppConfig.speedEmaAlpha;
-      state
-        ..at = now
-        ..bytes = transferredBytes;
-    }
-
-    _tasks[id] = task.copyWith(
-      transferredBytes: transferredBytes,
-      speedBytesPerSecond: speed,
-      averageSpeedBytesPerSecond: average,
-    );
+    // 新协议按对端接收进度展示；本地入队不再冒充对端已收到。
+    if (task.direction == TransferDirection.sending && _transport.remoteProtocolVersion >= 5) return;
+    _speedStates.putIfAbsent(id, () => TransferSpeed(_speedClock.elapsed, task.transferredBytes));
+    _tasks[id] = task.copyWith(transferredBytes: transferredBytes);
     _emit();
+  }
+
+  void _refreshSpeeds() {
+    final now = _speedClock.elapsed;
+    var changed = false;
+    for (final task in _tasks.values.toList()) {
+      if (!task.isActive) continue;
+      final remote = task.direction == TransferDirection.sending && _transport.remoteProtocolVersion >= 5;
+      int speed;
+      if (remote) {
+        final at = _reportedAt[task.id];
+        speed = at == null || now - at > const Duration(seconds: 3)
+            ? 0 : task.speedBytesPerSecond;
+      } else {
+        final meter = _speedStates.putIfAbsent(task.id,
+            () => TransferSpeed(now, task.transferredBytes));
+        speed = meter.sample(now, task.transferredBytes);
+      }
+      if (task.isPaused || task.status != TransferStatus.transferring) speed = 0;
+      _tasks[task.id] = task.copyWith(speedBytesPerSecond: speed,
+          averageSpeedBytesPerSecond: speed.toDouble());
+      changed = true;
+      if (task.direction == TransferDirection.receiving &&
+          task.status == TransferStatus.transferring && _transport.remoteProtocolVersion >= 5) {
+        _transport.sendFileProgress(task.id, task.transferredBytes, speed);
+      }
+    }
+    if (changed) _emit(force: true);
   }
 
   void _update(
@@ -1578,6 +1597,7 @@ class TransferRepositoryLocal implements TransferRepository, PausableTransferRep
           status == TransferStatus.completed ? task.totalBytes : task.transferredBytes,
     );
     _speedStates.remove(id);
+    _reportedAt.remove(id);
     _waitingSince.remove(id);
     _awaitingFirstChunk.remove(id);
     _lastProgressAt.remove(id);
@@ -1657,12 +1677,7 @@ class _QueuedSend {
 }
 
 /// 速度测算状态。
-class _SpeedState {
-  _SpeedState(this.at, this.bytes);
 
-  DateTime at;
-  int bytes;
-}
 
 /// 一个正在接收的文件的落盘位置与已收字节数。
 class _IncomingState {
