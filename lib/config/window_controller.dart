@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:window_manager/window_manager.dart';
 
 /// 窗口操作的收窄封装：只暴露退出流程用得到的那几个动作。
@@ -27,14 +29,27 @@ abstract class WindowController {
 
 /// 真实实现：转调 window_manager 插件。
 class WindowManagerController extends WindowController {
-  const WindowManagerController();
+  const WindowManagerController({bool? windows, void Function(int)? terminateProcess})
+      : _windows = windows, _terminateProcess = terminateProcess;
+
+  final bool? _windows;
+  final void Function(int)? _terminateProcess;
 
   @override
   Future<void> setPreventClose(bool value) =>
       windowManager.setPreventClose(value);
 
   @override
-  Future<void> destroy() => windowManager.destroy();
+  Future<void> destroy() async {
+    if (_windows ?? Platform.isWindows) {
+      // 仅由 AppShutdown 在业务收尾、保存和日志刷新后调用。
+      // Windows 直接退出进程，避免同步销毁 Flutter/媒体插件时阻塞窗口线程。
+      // exit 不执行 finally，不能用于替代业务收尾。
+      (_terminateProcess ?? exit)(0);
+      return;
+    }
+    await windowManager.destroy();
+  }
 
   @override
   void addListener(WindowListener listener) =>

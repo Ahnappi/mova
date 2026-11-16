@@ -48,7 +48,7 @@ class AppConfig {
   ///
   /// 检查更新是界面上的一次点击，卡十几秒比直接失败更难受；
   /// 失败也只是「没查到」，不影响用。
-  static const Duration updateCheckTimeout = Duration(seconds: 8);
+  static const Duration updateCheckTimeout = Duration(seconds: 30);
 
   /// TCP 消息端口：对端主动连接本机时使用。
   static const int tcpPort = 49153;
