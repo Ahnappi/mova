@@ -891,12 +891,14 @@ class TransferRepositoryLocal implements TransferRepository, PausableTransferRep
     }
 
     if (task.direction == TransferDirection.receiving) {
-      // 准备期间（选目录/建临时文件）没有 _incoming 登记，
-      // 但可能已经建好了临时文件：先作废旧准备，再走常规清理。
-      await _abortPreparing(fileId);
-      await _abortIncoming(fileId, deletePartial: true);
+      // 立即通知发送方停止，并使晚到的数据/结束帧失效。
+      // 不把停止信号排在磁盘清理之后，否则慢盘期间对端仍会继续推流。
       _transport.sendFileCancel(fileId, reason: '接收方取消');
       _finish(fileId, TransferStatus.canceled);
+      // 在第一次 await 前作废准备并捕获本次接收状态，避免跨会话清错任务。
+      final preparingCleanup = _abortPreparing(fileId);
+      final incomingCleanup = _abortIncoming(fileId, deletePartial: true);
+      await Future.wait([preparingCleanup, incomingCleanup]);
       return;
     }
     // 已推完、正在等回执：数据已经在对端手里，只能请它丢弃。

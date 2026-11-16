@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mova/config/app_config.dart';
+import 'package:mova/utils/result.dart';
 import 'package:mova/data/repositories/transfer/transfer_repository_local.dart';
 import 'package:mova/data/services/chat/chat_transport_service.dart';
 import 'package:mova/data/services/storage/settings_service.dart';
@@ -144,6 +145,17 @@ void main() {
       ),
     );
 
+    // 并发传输时第二个 offer 可能早于第一个取消到达，不能把它当取消确认。
+    final cancelDeadline = DateTime.now().add(const Duration(seconds: 10));
+    while (!senderRepo.currentTasks.any((task) =>
+        task.id == bigFileId && task.status == TransferStatus.canceled) &&
+        DateTime.now().isBefore(cancelDeadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    expect(senderRepo.currentTasks.any((task) =>
+        task.id == bigFileId && task.status == TransferStatus.canceled), isTrue,
+        reason: '发送方未确认取消：${senderRepo.currentTasks.map((t) => '${t.fileName}:${t.status}:${t.error}').join(', ')}');
+
     // 取消之前就已经在路上的数据拦不住，给它们一点时间落地。
     await Future<void>.delayed(const Duration(seconds: 1));
     final settledChunks = bigChunks;
@@ -164,13 +176,16 @@ void main() {
     );
 
     // 第二个文件要能正常接收完成。
-    await receiverRepo.accept(secondId, saveDirectory: saveDir.path);
+    final accepted = await receiverRepo.accept(secondId, saveDirectory: saveDir.path);
+    expect(accepted, isA<Ok<void>>(), reason: '第二个文件接收准备失败：$accepted');
     final saved = File('${saveDir.path}/small.bin');
     var length = 0;
     for (var i = 0; i < 100 && length < 64 * 1024; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       if (await saved.exists()) length = await saved.length();
     }
-    expect(length, 64 * 1024, reason: '第二个文件没有完整落盘');
+    expect(length, 64 * 1024, reason: '第二个文件没有完整落盘。'
+        '发送端：${senderRepo.currentTasks.map((t) => '${t.fileName}:${t.status}:${t.error}').join(', ')}；'
+        '接收端：${receiverRepo.currentTasks.map((t) => '${t.fileName}:${t.status}:${t.error}').join(', ')}');
   }, timeout: const Timeout(Duration(minutes: 2)));
 }
